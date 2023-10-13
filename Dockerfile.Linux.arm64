@@ -1,0 +1,30 @@
+# Use Python 3.9 slim version as the base image
+FROM python:3.9-slim-arm64v8
+
+# Set working directory
+WORKDIR /app
+
+# Install git and pip dependencies
+RUN apt-get update && apt-get install -y git
+
+# Copy requirements.txt and install dependencies
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Clone the 'dev' branch of the oceanstream package from the GitHub repo
+RUN git clone -b dev https://github.com/OceanStreamIO/oceanstream.git
+WORKDIR /app/oceanstream
+RUN pip install .
+
+# Return to the main app directory
+WORKDIR /app
+
+# Set up the data directory
+WORKDIR /app/data
+
+# Copy the main.py file to /app (or you can adjust as needed)
+WORKDIR /app
+COPY main.py .
+
+# Command to run the application
+CMD ["python", "main.py"]
