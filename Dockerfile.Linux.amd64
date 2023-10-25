@@ -17,8 +17,11 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the main.py file
+# Copy the main.py and other related files
 COPY main.py .
+COPY azure_handler.py .
+COPY echosounder_processor.py .
+COPY database_handler.py .
 
 # Command to run the application
 CMD ["python","-u","main.py"]
