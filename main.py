@@ -10,8 +10,6 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 # Event indicating client stop
 stop_event = threading.Event()
 
-# Configuration
-DIRECTORY_TO_WATCH = "/app/tmpdata"
 
 # Signal handler for intreruptions and closing
 def signal_handler(signal, frame):
@@ -30,6 +28,7 @@ def main():
     else:
         client = create_client()
     loop = asyncio.get_event_loop()
+    print("Echosounder loop ready")
     try:
         loop.run_forever()
     except KeyboardInterrupt:
