@@ -6,7 +6,6 @@ from pathlib import Path
 import os
 import sys
 
-
 from database_handler import DBHandler
 from filter_configs import (false_seabed_params, 
                             seabed_params, 
@@ -63,7 +62,11 @@ def setup_database():
     return db
 
 async def process_file(filename):
-    logging.info("Check and process files")
+
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    logger = logging.getLogger(__name__)
+    logger.info("Check and process files")
     generic_message = file_message.copy()
     # Create a database handler instance and set up the database
     db = setup_database()
@@ -83,6 +86,7 @@ async def process_file(filename):
     # Process the file using oceanstream package
     echodata = read_raw_files([check])[0]
     print("Got raw data")
+    logger.info("New raw file read")
     if check_reversed_time(echodata, "Sonar/Beam_group1", "ping_time"):
         echodata = fix_time_reversions(echodata, {"Sonar/Beam_group1": "ping_time"})
     sv_dataset = compute_sv(echodata)
@@ -93,6 +97,7 @@ async def process_file(filename):
                     "zarr"
                     )
     print("Saved SV processed file")
+    logging.info("Saved SV processed file")
     if check["sonar_model"] == "EK60":
         encode_mode="power"
     elif check["sonar_model"] == "EK80":
@@ -230,6 +235,7 @@ async def process_file(filename):
     generic_message["NASC"] = ",".join(map(str,NASC_dict["NASC_dataset"]["NASC"].values.flatten()))
 
     return generic_message
+
 
 def main():
     # Check if the argument is provided
