@@ -236,7 +236,7 @@ def main():
         for filename in files:
             if "raw" in filename:
                 file_path = os.path.join(root, filename)
-                result = await process_file(file_path)
+                result = process_file(file_path)
                 print(result)
 if __name__ == "__main__":
     main()
