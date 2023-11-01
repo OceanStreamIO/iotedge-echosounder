@@ -6,13 +6,13 @@ Install:
 
     pip install requirements.txt 
     
-Before running create a folderfor processed data. 
+Before running create a folder for processed data. 
 
     mkdir /app/procdata
     
-It send all processd files there (this is from iotedge behavior).
-The processing module can be used standalone by calling:
+It sends all processd files there (this is from iotedge behavior).
+The processing module can be used stand-alone by calling:
 
     python echosounder_processor.py <directory_path>
 
-Where directory_path point to a folder with raw echosounder files. 
+Where directory_path points to a folder with raw echosounder files. 
