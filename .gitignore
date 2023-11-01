@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.db
 
 # C extensions
 *.so
@@ -24,6 +25,10 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# Ignore everything in /app/procdata
+/app/procdata/*
+# But don't ignore the README (or other files you want to keep)
+!/app/procdata/README.md
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

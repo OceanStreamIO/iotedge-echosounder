@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import logging
@@ -51,8 +52,9 @@ from oceanstream.utils import (add_metadata_to_mask,
 
 
 # Configurations
-DIRECTORY_TO_RAW = "/app/tmpdata"
-DIRECTORY_TO_PROC = "/app/procdata"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DIRECTORY_TO_RAW = os.path.join(BASE_DIR, "app", "tmpdata")
+DIRECTORY_TO_PROC = os.path.join(BASE_DIR, "app", "procdata")
 
 
 def setup_database():
@@ -67,6 +69,7 @@ async def process_file(filename):
     db = setup_database()
     start_processing = datetime.datetime.now()
     raw_path = Path(filename)
+    output_dir = Path(DIRECTORY_TO_PROC)
     # Check if the file has been processed before
     if db.file_processed_before(filename):
         logging.info(f"File {filename} has already been processed. Skipping.")
@@ -83,7 +86,7 @@ async def process_file(filename):
     sv_dataset = compute_sv(echodata)
     write_processed(
                     sv_dataset,
-                    DIRECTORY_TO_PROC,
+                    output_dir,
                     raw_path.stem,
                     "zarr"
                     )
@@ -166,13 +169,17 @@ async def process_file(filename):
     ## Calibration and metadata
     calibration = create_calibration(echodata)
     metadata = create_metadata(echodata)
-    export_raw_csv(echodata,DIRECTORY_TO_PROC,raw_path.stem)
+    export_raw_csv(echodata,
+                   output_dir,
+                   raw_path.stem)
     print("Calibration and metadata exported")
     ## Raw SV and GPS for r shinny
     channel = ds_clean["channel"][0]
     location_speed = create_location(ds_clean)
     SV = create_Sv(ds_clean,channel)
-    export_Sv_csv(ds_clean,DIRECTORY_TO_PROC,raw_path.stem)
+    export_Sv_csv(ds_clean,
+                  output_dir,
+                  raw_path.stem)
     print("SV and GPS exported")
 
     ### Add seabed detection
@@ -239,7 +246,7 @@ def main():
         for filename in files:
             if "raw" in filename:
                 file_path = os.path.join(root, filename)
-                result = process_file(file_path)
+                result = asyncio.run(process_file(file_path))
                 print(result)
 if __name__ == "__main__":
     main()
