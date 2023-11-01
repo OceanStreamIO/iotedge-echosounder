@@ -83,6 +83,8 @@ async def process_file(filename):
     # Process the file using oceanstream package
     echodata = read_raw_files([check])[0]
     print("Got raw data")
+    if check_reversed_time(echodata, "Sonar/Beam_group1", "ping_time"):
+        echodata = fix_time_reversions(echodata, {"Sonar/Beam_group1": "ping_time"})
     sv_dataset = compute_sv(echodata)
     write_processed(
                     sv_dataset,
@@ -246,7 +248,10 @@ def main():
         for filename in files:
             if "raw" in filename:
                 file_path = os.path.join(root, filename)
-                result = asyncio.run(process_file(file_path))
-                print(result)
+                try:
+                    result = asyncio.run(process_file(file_path))
+                    print(result)
+                except Exception as e:
+                    continue
 if __name__ == "__main__":
     main()
