@@ -2,8 +2,15 @@
 Azure IoT Edge module that handles raw echosounder data in real-time
 
 ## Stand-alone usage
-Before running create a /app/procdata folder. 
-It send all processd files there(this is from iotegde behavior).
+Install:
+
+    pip install requirements.txt 
+    
+Before running create a folderfor processed data. 
+
+    mkdir /app/procdata
+    
+It send all processd files there (this is from iotedge behavior).
 The processing module can be used standalone by calling:
 
     python echosounder_processor.py <directory_path>
