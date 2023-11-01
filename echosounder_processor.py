@@ -63,10 +63,6 @@ def setup_database():
 
 async def process_file(filename):
 
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-    logger = logging.getLogger(__name__)
-    logger.info("Check and process files")
     generic_message = file_message.copy()
     # Create a database handler instance and set up the database
     db = setup_database()
@@ -86,7 +82,7 @@ async def process_file(filename):
     # Process the file using oceanstream package
     echodata = read_raw_files([check])[0]
     print("Got raw data")
-    logger.info("New raw file read")
+    logging.info("New raw file read")
     if check_reversed_time(echodata, "Sonar/Beam_group1", "ping_time"):
         echodata = fix_time_reversions(echodata, {"Sonar/Beam_group1": "ping_time"})
     sv_dataset = compute_sv(echodata)
@@ -196,18 +192,26 @@ async def process_file(filename):
                                     )
     print("Applied seabed and false seabed masks")
     ## Shoal detection
-    """
-    ds_clean = attach_shoal_mask_to_ds(ds_clean)
+    parameters = {
+                  "thr": -55, 
+                  "maxvgap": -5, 
+                  "maxhgap": 0, 
+                  "minvlen": 5, 
+                  "minhlen": 5
+                  }
+    shoal_dataset = attach_shoal_mask_to_ds(
+                                            ds_clean, 
+                                            parameters=parameters, 
+                                            method="will"
+                                            )
+    if shoal_dataset["mask_shoal"].values.any():
+        shoal_list = process_shoals(shoal_dataset)
+        write_shoals_to_csv(shoal_list,
+                            os.path.join(DIRECTORY_TO_PROC,
+                                         raw_path.stem+"_fish_schools.csv"
+                                        )
+                            )
 
-    shoal_list = process_shoals(ds_clean)
-    print(shoal_list)
-    
-    write_shoals_to_csv(shoal_list,
-                        os.path.join(DIRECTORY_TO_PROC,
-                                     raw_path.stem+"_fish_shoals.csv"
-                                     )
-                        )
-    """
     try:
         additional_info = "Processed without errors"
         db.mark_file_as_processed(
@@ -258,6 +262,7 @@ def main():
                     result = asyncio.run(process_file(file_path))
                     print(result)
                 except Exception as e:
+                    print(e)
                     continue
 if __name__ == "__main__":
     main()
