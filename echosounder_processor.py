@@ -60,7 +60,7 @@ DIRECTORY_TO_PROC = "/app/procdata"
 async def process_file(filename):
     logging.info("Check and process files")
     generic_message = file_message.copy()
-        # Create a database handler instance and set up the database
+    # Create a database handler instance and set up the database
     db = DBHandler()
     db.setup_database()
     start_processing = datetime.datetime.now()
@@ -112,6 +112,37 @@ async def process_file(filename):
 
         sv_with_masks = create_noise_masks_oceanstream(sv_enriched)
         print("Added masks to data")
+
+        ## Real seabed
+        seabed_mask = create_seabed_mask(
+                      ds_processed,
+                      method="ariza",
+                      parameters=seabed_params,
+                      )
+        seabed_mask = add_metadata_to_mask(
+                      mask=seabed_mask,
+                      metadata={
+                      "mask_type": "seabed",
+                      "method": "ariza",
+                      "parameters": dict_to_formatted_list(seabed_params),
+                      }
+                      )
+        ## Fake seabed
+        seabed_echo_mask = create_seabed_mask(
+                           ds_processed,
+                           method="blackwell_mod",
+                           parameters=false_seabed_params
+                           )
+        seabed_echo_mask = add_metadata_to_mask(
+                           mask=seabed_echo_mask,
+                           metadata={
+                           "mask_type": "false_seabed",
+                           "method": "blackwell_mod",
+                           "parameters": dict_to_formatted_list(false_seabed_params),
+                           },
+                           )
+        ds_processed = attach_masks_to_dataset(ds_processed, [seabed_mask,seabed_echo_mask])
+        
         process_parameters ={
                             "mask_transient": {"var_name": "Sv"},
                             "mask_impulse": {"var_name": "Sv"},
@@ -135,7 +166,7 @@ async def process_file(filename):
         ### Add CSV making
         ## NASC
         NASC_dict = compute_per_dataset_nasc(ds_clean)
-        generic_message["NASC"] = str(NASC_dict["NASC_dataset"]["NASC"].values.flatten())
+        generic_message["NASC"] = ",".join(map(str,NASC_dict["NASC_dataset"]["NASC"].values.flatten()))
         print("NASC computed")
 
         ## Calibration and metadata
@@ -151,44 +182,18 @@ async def process_file(filename):
         print("SV and GPS exported")
 
         ### Add seabed detection
-        ## Real seabed
-        seabed_mask = create_seabed_mask(
-                      ds_clean,
-                      method="ariza",
-                      parameters=seabed_params,
-                      )
-        seabed_mask = add_metadata_to_mask(
-                      mask=seabed_mask,
-                      metadata={
-                      "mask_type": "seabed",
-                      "method": "ariza",
-                      "parameters": dict_to_formatted_list(seabed_params),
-                      }
-                      )
-        ## Fake seabed
-        seabed_echo_mask = create_seabed_mask(
-                           ds_clean,
-                           method="blackwell_mod",
-                           parameters=false_seabed_params
-                           )
-        seabed_echo_mask = add_metadata_to_mask(
-                           mask=seabed_echo_mask,
-                           metadata={
-                           "mask_type": "false_seabed",
-                           "method": "blackwell_mod",
-                           "parameters": dict_to_formatted_list(false_seabed_params),
-                           },
-                           )
-        ds_clean = attach_masks_to_dataset(ds_clean, [seabed_mask,seabed_echo_mask])
         ds_clean = apply_selected_masks(
                                         ds_clean, 
                                         seabed_process_parameters
                                         )
         print("Applied seabed and false seabed masks")
         ## Shoal detection
-        """
+        
         ds_clean = attach_shoal_mask_to_ds(ds_clean)
+
         shoal_list = process_shoals(ds_clean)
+        print(shoal_list)
+        """
         write_shoals_to_csv(shoal_list,
                             os.path.join(DIRECTORY_TO_PROC,
                                          raw_path.stem+"_fish_shoals.csv"
