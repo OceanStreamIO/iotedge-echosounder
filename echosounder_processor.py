@@ -55,159 +55,148 @@ DIRECTORY_TO_RAW = "/app/tmpdata"
 DIRECTORY_TO_PROC = "/app/procdata"
 
 
-
+def setup_database():
+    db = DBHandler()
+    db.setup_database()
+    return db
 
 async def process_file(filename):
     logging.info("Check and process files")
     generic_message = file_message.copy()
     # Create a database handler instance and set up the database
-    db = DBHandler()
-    db.setup_database()
+    db = setup_database()
     start_processing = datetime.datetime.now()
     raw_path = Path(filename)
     # Check if the file has been processed before
     if db.file_processed_before(filename):
         logging.info(f"File {filename} has already been processed. Skipping.")
         db.close()
-        return {"Data already processed ":filename}
-    try:
-        check = file_integrity_checking(filename)
-        file_integrity = check.get("file_integrity", False)
-        if not file_integrity:
-            return {"File integrity":"False"}
+        return {"Processing Warning":f"File {filename} has already been processed"}
+    check = file_integrity_checking(filename)
+    file_integrity = check.get("file_integrity", False)
+    if not file_integrity:
+        return {"Processing Error":f"File {filename} could not usable!"}
 
-        # Process the file using oceanstream package
-        echodata = read_raw_files([check])[0]
-        print("Got raw data")
-        sv_dataset = compute_sv(echodata)
-        write_processed(
-                        sv_dataset,
-                        DIRECTORY_TO_PROC,
-                        raw_path.stem,
-                        "zarr"
+    # Process the file using oceanstream package
+    echodata = read_raw_files([check])[0]
+    print("Got raw data")
+    sv_dataset = compute_sv(echodata)
+    write_processed(
+                    sv_dataset,
+                    DIRECTORY_TO_PROC,
+                    raw_path.stem,
+                    "zarr"
+                    )
+    print("Saved SV processed file")
+    if check["sonar_model"] == "EK60":
+        encode_mode="power"
+    elif check["sonar_model"] == "EK80":
+        encode_mode="complex"
+    else:
+        encode_mode="power"
+    sv_enriched = enrich_sv_dataset(sv_dataset,
+                                    echodata,
+                                    waveform_mode="CW",
+                                    encode_mode=encode_mode
+                                    )
+    print("Enriched data")
+    file_start_timestamp = sv_enriched["ping_time"].values[0]
+    file_end_timestamp = sv_enriched["ping_time"].values[-1]
+
+
+    sv_with_masks = create_noise_masks_oceanstream(sv_enriched)
+    print("Added noise masks to data")
+
+    ## Real seabed
+    seabed_mask = create_seabed_mask(
+                  sv_with_masks,
+                  method="ariza",
+                  parameters=seabed_params,
+                  )
+    seabed_mask = add_metadata_to_mask(
+                  mask=seabed_mask,
+                  metadata={
+                  "mask_type": "seabed",
+                  "method": "ariza",
+                  "parameters": dict_to_formatted_list(seabed_params),
+                  }
+                  )
+    ## Fake seabed
+    seabed_echo_mask = create_seabed_mask(
+                       sv_with_masks,
+                       method="blackwell_mod",
+                       parameters=false_seabed_params
+                       )
+    seabed_echo_mask = add_metadata_to_mask(
+                       mask=seabed_echo_mask,
+                       metadata={
+                       "mask_type": "false_seabed",
+                       "method": "blackwell_mod",
+                       "parameters": dict_to_formatted_list(false_seabed_params),
+                       },
+                       )
+    sv_with_masks = attach_masks_to_dataset(sv_with_masks, [seabed_mask,seabed_echo_mask])
+    print("Added seabed masks to data")
+    noise_masks ={
+                  "mask_transient": {"var_name": "Sv"},
+                  "mask_impulse": {"var_name": "Sv"},
+                  "mask_attenuation": {"var_name": "Sv"}
+                  }
+    ds_processed = apply_selected_masks(
+                                        sv_with_masks, 
+                                        noise_masks
+                                        )
+    print("Applied noise masks to data")
+    ds_interpolated = interpolate_sv(ds_processed)
+    print("Interpolated nans on data")
+    ds_interpolated = ds_interpolated.rename({"Sv": "Sv_denoised", 
+                                              "Sv_interpolated": "Sv"
+                                              })
+    #ds_clean = apply_remove_background_noise(ds_interpolated)
+    ds_clean = apply_selected_masks(
+                                    ds_interpolated, 
+                                    process_parameters
+                                    )
+    print("Removed background noise on data")
+    ### Add CSV making
+    ## NASC
+    NASC_dict = compute_per_dataset_nasc(ds_clean)
+    print("NASC computed")
+
+    ## Calibration and metadata
+    calibration = create_calibration(echodata)
+    metadata = create_metadata(echodata)
+    export_raw_csv(echodata,DIRECTORY_TO_PROC,raw_path.stem)
+    print("Calibration and metadata exported")
+    ## Raw SV and GPS for r shinny
+    channel = ds_clean["channel"][0]
+    location_speed = create_location(ds_clean)
+    SV = create_Sv(ds_clean,channel)
+    export_Sv_csv(ds_clean,DIRECTORY_TO_PROC,raw_path.stem)
+    print("SV and GPS exported")
+
+    ### Add seabed detection
+    ds_clean = apply_selected_masks(
+                                    ds_clean, 
+                                    seabed_process_parameters
+                                    )
+    print("Applied seabed and false seabed masks")
+    ## Shoal detection
+    """
+    ds_clean = attach_shoal_mask_to_ds(ds_clean)
+
+    shoal_list = process_shoals(ds_clean)
+    print(shoal_list)
+    
+    write_shoals_to_csv(shoal_list,
+                        os.path.join(DIRECTORY_TO_PROC,
+                                     raw_path.stem+"_fish_shoals.csv"
+                                     )
                         )
-        print("Saved SV processed file")
-        if check["sonar_model"] == "EK60":
-            encode_mode="power"
-        elif check["sonar_model"] == "EK80":
-            encode_mode="complex"
-        else:
-            encode_mode="power"
-        sv_enriched = enrich_sv_dataset(sv_dataset,
-                                        echodata,
-                                        waveform_mode="CW",
-                                        encode_mode=encode_mode
-                                        )
-        print("Enriched data")
-        file_start_timestamp = sv_enriched["ping_time"].values[0]
-        file_end_timestamp = sv_enriched["ping_time"].values[-1]
-
-        generic_message["filename"] = filename
-        generic_message["pings per file"] = len(sv_enriched["ping_time"].values)
-        generic_message["Time"] = str(sv_enriched["ping_time"].values[0])
-        generic_message["Start latitude"] = echodata["Platform"]["latitude"].values[0]
-        generic_message["Start longitude"] = echodata["Platform"]["longitude"].values[0]
-        generic_message["Freq. (Hz)"] = ",".join(map(str,echodata["Environment"]["frequency_nominal"].values))
-
-
-        sv_with_masks = create_noise_masks_oceanstream(sv_enriched)
-        print("Added masks to data")
-
-        ## Real seabed
-        seabed_mask = create_seabed_mask(
-                      ds_processed,
-                      method="ariza",
-                      parameters=seabed_params,
-                      )
-        seabed_mask = add_metadata_to_mask(
-                      mask=seabed_mask,
-                      metadata={
-                      "mask_type": "seabed",
-                      "method": "ariza",
-                      "parameters": dict_to_formatted_list(seabed_params),
-                      }
-                      )
-        ## Fake seabed
-        seabed_echo_mask = create_seabed_mask(
-                           ds_processed,
-                           method="blackwell_mod",
-                           parameters=false_seabed_params
-                           )
-        seabed_echo_mask = add_metadata_to_mask(
-                           mask=seabed_echo_mask,
-                           metadata={
-                           "mask_type": "false_seabed",
-                           "method": "blackwell_mod",
-                           "parameters": dict_to_formatted_list(false_seabed_params),
-                           },
-                           )
-        ds_processed = attach_masks_to_dataset(ds_processed, [seabed_mask,seabed_echo_mask])
-        
-        process_parameters ={
-                            "mask_transient": {"var_name": "Sv"},
-                            "mask_impulse": {"var_name": "Sv"},
-                            "mask_attenuation": {"var_name": "Sv"}
-                            }
-        ds_processed = apply_selected_masks(
-                                            sv_with_masks, 
-                                            process_parameters
-                                            )
-        print("Applied masks to data")
-        ds_interpolated = interpolate_sv(ds_processed)
-        print("Interpolated nans on data")
-        ds_interpolated = ds_interpolated.rename({"Sv": "Sv_denoised", 
-                                                  "Sv_interpolated": "Sv"
-                                                  })
-        #ds_clean = apply_remove_background_noise(ds_interpolated)
-        ds_clean = apply_selected_masks(
-                                        ds_interpolated, 
-                                        process_parameters
-                                        )
-        ### Add CSV making
-        ## NASC
-        NASC_dict = compute_per_dataset_nasc(ds_clean)
-        generic_message["NASC"] = ",".join(map(str,NASC_dict["NASC_dataset"]["NASC"].values.flatten()))
-        print("NASC computed")
-
-        ## Calibration and metadata
-        calibration = create_calibration(echodata)
-        metadata = create_metadata(echodata)
-        export_raw_csv(echodata,DIRECTORY_TO_PROC,raw_path.stem)
-        print("Calibration and metadata exported")
-        ## Raw SV and GPS for r shinny
-        channel = ds_clean["channel"][0]
-        location_speed = create_location(ds_clean)
-        SV = create_Sv(ds_clean,channel)
-        export_Sv_csv(ds_clean,DIRECTORY_TO_PROC,raw_path.stem)
-        print("SV and GPS exported")
-
-        ### Add seabed detection
-        ds_clean = apply_selected_masks(
-                                        ds_clean, 
-                                        seabed_process_parameters
-                                        )
-        print("Applied seabed and false seabed masks")
-        ## Shoal detection
-        
-        ds_clean = attach_shoal_mask_to_ds(ds_clean)
-
-        shoal_list = process_shoals(ds_clean)
-        print(shoal_list)
-        """
-        write_shoals_to_csv(shoal_list,
-                            os.path.join(DIRECTORY_TO_PROC,
-                                         raw_path.stem+"_fish_shoals.csv"
-                                         )
-                            )
-        """
-    except FileNotFoundError as e:
-        logging.error(f"File {filename} could not be read!" + str(e))
-    except ValueError as e:
-        logging.error(f"Could not compute SV for file {filename} due to: {e}")
-    finally:
-        try:
-            additional_info = "Processed without errors"
-            db.mark_file_as_processed(
+    """
+    try:
+        additional_info = "Processed without errors"
+        db.mark_file_as_processed(
                                filename,
                                filename_processed=os.path.join(
                                                                DIRECTORY_TO_PROC,
@@ -217,12 +206,21 @@ async def process_file(filename):
                                end_date=file_end_timestamp,
                                start_processing=start_processing,
                                additional_info=None)
-            print("Succesfully saved to DB")
-        except Exception as e:
-            logging.error(f"Failed to send data for file {filename}: {e}")
-        finally:
-            db.close()
-            return generic_message
+        print("Succesfully saved to DB")
+    except Exception as e:
+        logging.error(f"Failed to save data for file {filename} in DB: {e}")
+    finally:
+        db.close()
+
+    generic_message["filename"] = filename
+    generic_message["pings per file"] = len(sv_enriched["ping_time"].values)
+    generic_message["Time"] = str(sv_enriched["ping_time"].values[0])
+    generic_message["Start latitude"] = echodata["Platform"]["latitude"].values[0]
+    generic_message["Start longitude"] = echodata["Platform"]["longitude"].values[0]
+    generic_message["Freq. (Hz)"] = ",".join(map(str,echodata["Environment"]["frequency_nominal"].values))
+    generic_message["NASC"] = ",".join(map(str,NASC_dict["NASC_dataset"]["NASC"].values.flatten()))
+
+    return generic_message
 
 def main():
     # Check if the argument is provided
