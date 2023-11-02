@@ -6,11 +6,7 @@ Install:
 
     pip install requirements.txt 
     
-Before running create a folder for processed data. 
-
-    mkdir /app/procdata
-    
-It sends all processd files there (this is from iotedge behavior).
+It sends all processd files to /app/procdata (this is from iotedge behavior).
 The processing module can be used stand-alone by calling:
 
     python echosounder_processor.py <directory_path>
