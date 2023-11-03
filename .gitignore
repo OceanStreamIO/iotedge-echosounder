@@ -26,9 +26,9 @@ wheels/
 *.egg
 MANIFEST
 # Ignore everything in /app/procdata
-/app/procdata/*
+/procdata/*
 # But don't ignore the README (or other files you want to keep)
-!/app/procdata/README.md
+!/procdata/README.md
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

@@ -54,8 +54,7 @@ from oceanstream.utils import (add_metadata_to_mask,
 
 # Configurations
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DIRECTORY_TO_RAW = os.path.join(BASE_DIR, "app", "tmpdata")
-DIRECTORY_TO_PROC = os.path.join(BASE_DIR, "app", "procdata")
+DIRECTORY_TO_PROC = os.path.join(BASE_DIR, "procdata")
 key_list = ['label','frequency','filename','area',
             'Sv_mean','npings', 'nsamples', 'corrected_length', 
             'mean_range', 'start_range', 'end_range', 
@@ -297,7 +296,6 @@ def main():
     if not os.path.isdir(directory_path):
         print(f"The provided path '{directory_path}' is not a directory.")
         sys.exit(1)
-
     # Process all files within the directory
     for root, _, files in os.walk(directory_path):
         for filename in files:
