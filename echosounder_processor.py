@@ -55,12 +55,7 @@ from oceanstream.utils import (add_metadata_to_mask,
 # Configurations
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIRECTORY_TO_PROC = os.path.join(BASE_DIR, "procdata")
-key_list = ['label','frequency','filename','area',
-            'Sv_mean','npings', 'nsamples', 'corrected_length', 
-            'mean_range', 'start_range', 'end_range', 
-            'start_time', 'end_time', 
-            'start_lat', 'end_lat', 
-            'start_lon', 'end_lon', 'nasc']
+
 
 
 def setup_database():
@@ -68,9 +63,17 @@ def setup_database():
     db.setup_database()
     return db
 def format_message(shoal):
+    key_list = ['label','frequency','area',
+            'Sv_mean','npings', 'nsamples', 'corrected_length', 
+            'mean_range', 'start_range', 'end_range', 
+            'start_time', 'end_time', 
+            'start_lat', 'end_lat', 
+            'start_lon', 'end_lon', 'nasc']
     formated_shoal_message = {}
     for key in shoal.keys():
-        if key in key_list:
+        if  key == 'filename':
+            formated_shoal_message[key] = shoal[key]
+        elif key in key_list:
             formated_shoal_message["shoal_"+key.lower()] = shoal[key]
     return formated_shoal_message
 
