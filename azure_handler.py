@@ -16,8 +16,9 @@ def create_client(connection_string=None):
             message_type = dict_obj.get("event", None)
             if message_type == "fileadd":
                 # Trigger the file checking and processing
-                message = await process_file(dict_obj["filename"])
-                await send_to_hub(client, message)
+                message_list = await process_file(dict_obj["filename"])
+                for message in message_list:
+                    await send_to_hub(client, message)
             elif message_type == "userrequest":
                 await handle_user_request(client, dict_obj)
             else:

@@ -56,16 +56,27 @@ from oceanstream.utils import (add_metadata_to_mask,
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIRECTORY_TO_RAW = os.path.join(BASE_DIR, "app", "tmpdata")
 DIRECTORY_TO_PROC = os.path.join(BASE_DIR, "app", "procdata")
+key_list = ['label','frequency','filename','area',
+            'Sv_mean','npings', 'nsamples', 'corrected_length', 
+            'mean_range', 'start_range', 'end_range', 
+            'start_time', 'end_time', 
+            'start_lat', 'end_lat', 
+            'start_lon', 'end_lon', 'nasc']
 
 
 def setup_database():
     db = DBHandler()
     db.setup_database()
     return db
+def format_message(shoal):
+    formated_shoal_message = {}
+    for key in shoal.keys():
+        if key in key_list:
+            formated_shoal_message["shoal_"+key.lower()] = shoal[key]
+    return formated_shoal_message
 
 async def process_file(filename):
 
-    generic_message = file_message.copy()
     # Create a database handler instance and set up the database
     db = setup_database()
     start_processing = datetime.datetime.now()
@@ -209,6 +220,14 @@ async def process_file(filename):
                                      raw_path.stem+"_fish_schools.csv"
                                     )
                        )
+    return_message_list = []
+    for shoal in shoal_list:
+        shoal["filename"] = raw_path.stem+".zarr"
+        shoal["mean_range"] = shoal["mean_range"].item() if shoal["mean_range"] else None
+        shoal["start_time"] = str(shoal["start_time"])
+        shoal["end_time"] = str(shoal["end_time"])
+        shoal_message = format_message(shoal)
+        return_message_list.append(shoal_message)
     ## NASC
     
     NASC_dict = compute_per_dataset_nasc(shoal_dataset)
@@ -238,16 +257,33 @@ async def process_file(filename):
         logging.error(f"Failed to save data for file {filename} in DB: {e}")
     finally:
         db.close()
+        
+    generic_message = {}
+    generic_message["filename"] = raw_path.stem+".zarr"
+    generic_message["file_npings"] = len(sv_enriched["ping_time"].values)
+    generic_message["file_nsamples"] = len(sv_enriched["range_sample"].values)
+    generic_message["file_start_time"] = str(sv_enriched["ping_time"].values[0])
+    generic_message["file_end_time"] = str(sv_enriched["ping_time"].values[-1])
 
-    generic_message["filename"] = filename
-    generic_message["pings per file"] = len(sv_enriched["ping_time"].values)
-    generic_message["Time"] = str(sv_enriched["ping_time"].values[0])
-    generic_message["Start latitude"] = echodata["Platform"]["latitude"].values[0]
-    generic_message["Start longitude"] = echodata["Platform"]["longitude"].values[0]
-    generic_message["Freq. (Hz)"] = ",".join(map(str,echodata["Environment"]["frequency_nominal"].values))
-    generic_message["NASC"] = ",".join(map(str,NASC_dict["NASC_dataset"]["NASC"].values.flatten()))
+    generic_message["file_start_depth"] = str(sv_enriched["depth"].values[0,0,0])
+    generic_message["file_end_depth"] = str(sv_enriched["depth"].values[0,0,-1])
 
-    return generic_message
+    generic_message["file_start_lat"] = echodata["Platform"]["latitude"].values[0]
+    generic_message["file_start_lon"] = echodata["Platform"]["longitude"].values[0]
+    generic_message["file_end_lat"] = echodata["Platform"]["latitude"].values[-1]
+    generic_message["file_end_lon"] = echodata["Platform"]["longitude"].values[-1]
+
+    generic_message["file_freqs"] = ",".join(map(str,echodata["Environment"]["frequency_nominal"].values))
+    generic_message["file_nasc"] = ",".join(map(str,NASC_dict["NASC_dataset"]["NASC"].values.flatten()))
+
+    if shoal_dataset["mask_seabed"].any().values:
+        mean_depth_value = shoal_dataset['depth'].where(shoal_dataset['mask_seabed']).mean().values.item()
+    else:
+        mean_depth_value = None
+    generic_message["file_seabed_depth"] = mean_depth_value
+    generic_message["file_nshoals"] = len(shoal_list) if shoal_list[0]["label"] else 0
+    return_message_list.append(generic_message)
+    return return_message_list
 
 
 def main():
