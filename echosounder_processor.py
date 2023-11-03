@@ -41,7 +41,9 @@ from oceanstream.L3_regridded_data import (
     export_raw_csv,
     create_location,
     create_Sv,
-    export_Sv_csv
+    export_Sv_csv,
+    full_nasc_data,
+    write_nasc_to_csv
 )
 
 from oceanstream.utils import (add_metadata_to_mask, 
@@ -165,9 +167,6 @@ async def process_file(filename):
                                     )
     print("Removed background noise on data")
     ### Add CSV making
-    ## NASC
-    NASC_dict = compute_per_dataset_nasc(ds_clean)
-    print("NASC computed")
 
     ## Calibration and metadata
     calibration = create_calibration(echodata)
@@ -204,13 +203,22 @@ async def process_file(filename):
                                             parameters=parameters, 
                                             method="will"
                                             )
-    if shoal_dataset["mask_shoal"].values.any():
-        shoal_list = process_shoals(shoal_dataset)
-        write_shoals_to_csv(shoal_list,
-                            os.path.join(DIRECTORY_TO_PROC,
-                                         raw_path.stem+"_fish_schools.csv"
-                                        )
-                            )
+    shoal_list = process_shoals(shoal_dataset)
+    write_shoals_to_csv(shoal_list,
+                        os.path.join(DIRECTORY_TO_PROC,
+                                     raw_path.stem+"_fish_schools.csv"
+                                    )
+                       )
+    ## NASC
+    
+    NASC_dict = compute_per_dataset_nasc(shoal_dataset)
+    nasc = full_nasc_data(shoal_dataset)
+    write_nasc_to_csv(nasc,
+                      os.path.join(DIRECTORY_TO_PROC,
+                                     raw_path.stem+"_NASC.csv"
+                                    )
+                     )
+    print("NASC computed")
 
     try:
         additional_info = "Processed without errors"
@@ -223,7 +231,8 @@ async def process_file(filename):
                                start_date=file_start_timestamp,
                                end_date=file_end_timestamp,
                                start_processing=start_processing,
-                               additional_info=None)
+                               additional_info=additional_info
+                               )
         print("Succesfully saved to DB")
     except Exception as e:
         logging.error(f"Failed to save data for file {filename} in DB: {e}")
