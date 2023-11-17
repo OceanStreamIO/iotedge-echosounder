@@ -28,7 +28,6 @@ seabed_params = {
 process_parameters = {
         "remove_background_noise": {
         "ping_num": 40,
-        "range_sample_num": 10,
         "noise_max": -125,
         "SNR_threshold": 3,
         },

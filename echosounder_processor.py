@@ -32,7 +32,6 @@ from oceanstream.L3_regridded_data import (
     apply_selected_noise_masks_and_or_noise_removal as apply_selected_masks,
     compute_per_dataset_nasc,
     create_shoal_mask_multichannel,
-    combine_shoal_masks_multichannel,
     attach_shoal_mask_to_ds,
     process_shoals,
     write_shoals_to_csv,
@@ -62,6 +61,7 @@ def setup_database():
     db = DBHandler()
     db.setup_database()
     return db
+
 def format_message(shoal):
     key_list = ['label','frequency','area',
             'Sv_mean','npings', 'nsamples', 'corrected_length', 
@@ -93,14 +93,23 @@ async def process_file(filename):
     file_integrity = check.get("file_integrity", False)
     if not file_integrity:
         return {"Processing Error":f"File {filename} could not usable!"}
-
+    
     # Process the file using oceanstream package
     echodata = read_raw_files([check])[0]
     print("Got raw data")
     logging.info("New raw file read")
     if check_reversed_time(echodata, "Sonar/Beam_group1", "ping_time"):
         echodata = fix_time_reversions(echodata, {"Sonar/Beam_group1": "ping_time"})
-    sv_dataset = compute_sv(echodata)
+    if check["sonar_model"] == "EK60":
+        encode_mode="power"
+        sv_dataset = compute_sv(echodata)
+    elif check["sonar_model"] == "EK80":
+        encode_mode="complex"
+        sv_dataset = compute_sv(echodata,waveform_mode="CW",encode_mode="power")
+    else:
+        encode_mode="power"
+        sv_dataset = compute_sv(echodata)
+
     write_processed(
                     sv_dataset,
                     output_dir,
@@ -109,25 +118,22 @@ async def process_file(filename):
                     )
     print("Saved SV processed file")
     logging.info("Saved SV processed file")
-    if check["sonar_model"] == "EK60":
-        encode_mode="power"
-    elif check["sonar_model"] == "EK80":
-        encode_mode="complex"
-    else:
-        encode_mode="power"
+    
     sv_enriched = enrich_sv_dataset(sv_dataset,
                                     echodata,
                                     waveform_mode="CW",
                                     encode_mode=encode_mode
                                     )
     print("Enriched data")
+
     file_start_timestamp = sv_enriched["ping_time"].values[0]
     file_end_timestamp = sv_enriched["ping_time"].values[-1]
 
 
     sv_with_masks = create_noise_masks_oceanstream(sv_enriched)
     print("Added noise masks to data")
-
+    #print(sv_with_masks["Sv"])
+    print(sv_with_masks["Sv"].count()/sv_with_masks["Sv"].size)
     ## Real seabed
     seabed_mask = create_seabed_mask(
                   sv_with_masks,
@@ -167,18 +173,24 @@ async def process_file(filename):
                                         sv_with_masks, 
                                         noise_masks
                                         )
+                                        
+    #(ds_processed["Sv"])
+    print((ds_processed["Sv"].count()/ds_processed["Sv"].size).compute())
     print("Applied noise masks to data")
     ds_interpolated = interpolate_sv(ds_processed)
     print("Interpolated nans on data")
     ds_interpolated = ds_interpolated.rename({"Sv": "Sv_denoised", 
                                               "Sv_interpolated": "Sv"
                                               })
-    #ds_clean = apply_remove_background_noise(ds_interpolated)
+    print(ds_interpolated["Sv"].count()/ds_interpolated["Sv"].size)
+
     ds_clean = apply_selected_masks(
                                     ds_interpolated, 
                                     process_parameters
                                     )
     print("Removed background noise on data")
+    #print(ds_clean["Sv"])
+    print(ds_clean["Sv"].count()/ds_clean["Sv"].size)
     ### Add CSV making
 
     ## Calibration and metadata
@@ -209,13 +221,15 @@ async def process_file(filename):
                   "maxvgap": -5, 
                   "maxhgap": 0, 
                   "minvlen": 5, 
-                  "minhlen": 5
+                  "minhlen": 5,
+                  "dask_chunking": {"ping_time":100,"range_sample":100}
                   }
     shoal_dataset = attach_shoal_mask_to_ds(
                                             ds_clean, 
                                             parameters=parameters, 
                                             method="will"
                                             )
+
     shoal_list = process_shoals(shoal_dataset)
     write_shoals_to_csv(shoal_list,
                         os.path.join(DIRECTORY_TO_PROC,
