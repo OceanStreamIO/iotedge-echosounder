@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.db
+*.png
+# Processed data folder
+
+
 
 # C extensions
 *.so
