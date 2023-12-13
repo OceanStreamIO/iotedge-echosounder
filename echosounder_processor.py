@@ -37,6 +37,7 @@ from oceanstream.denoise import (
 )
 from oceanstream.echodata import (
     compute_sv_with_encode_mode,
+    compute_sv,
     enrich_sv_dataset,
     read_file,
     regrid_dataset,
@@ -98,7 +99,7 @@ def create_enriched_sv(echodata, encode_mode, sv_dataset):
 async def process_file(filename):
 
     # Create a database handler instance and set up the database
-    config = load_config()
+    config = load_config(user_config_path="defaults.config.json")
     config["raw_path"] = Path(filename)
     config["export_csv"] = True
     config["output_folder"] = DIRECTORY_TO_PROC
@@ -126,12 +127,19 @@ async def process_file(filename):
     logging.info("New raw file read")
 
     # Compute Sv with encode_mode and save to zarr
-    sv_dataset = compute_sv_with_encode_mode(
-        echodata, 
-        encode_mode=encode_mode, 
-        profiling_info=profiling_info, 
-        config=config
-    )
+    if config["sonar_model"] == "EK60":
+        sv_dataset = compute_sv_with_encode_mode(
+            echodata, 
+            encode_mode=encode_mode, 
+            profiling_info=profiling_info, 
+            config=config
+        )
+    if config["sonar_model"] == "EK80":
+        sv_dataset = compute_sv(
+                        echodata,
+                        waveform_mode="CW",
+                        encode_mode=encode_mode
+                        )
     
     write_processed(
                     sv_dataset,
@@ -199,7 +207,7 @@ async def process_file(filename):
     print(f"Created and applied masks: {mask_keys}")
 
     ds_interpolated = interpolate_sv(ds_processed)
-    print("Interpolated nans on data")
+    print("Interpolated nans")
     ds_interpolated = ds_interpolated.rename({"Sv": "Sv_denoised", 
                                               "Sv_interpolated": "Sv"
                                               })
@@ -208,7 +216,7 @@ async def process_file(filename):
                                profiling_info=profiling_info, 
                                config=config
                                )
-    print("Removed background noise on data")
+    print("Removed background noise")
 
     plot_all_channels(ds_clean,
                       save_path = DIRECTORY_TO_PROC,
@@ -231,15 +239,16 @@ async def process_file(filename):
         profiling_info=profiling_info, 
         config=config
     )
+    print("Identified shoals")
 
     ## NASC
     NASC_dict = compute_per_dataset_nasc(shoal_dataset)
     compute_and_write_nasc(
         shoal_dataset, 
         profiling_info={}, 
-        config=config)
-    
-    print("NASC computed")
+        config=config
+        )
+    print("Computed file NASC")
 
     return_message_list = []
     for shoal in shoal_list:
