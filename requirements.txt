@@ -1,3 +1,4 @@
-azure-iot-device~=2.7.0
+azure-iot-device
+python-dotenv
 git+https://github.com/OceanStreamIO/oceanstream.git@dev#egg=oceanstream 
-git+https://github.com/OceanStreamIO/echopype.git@next-dev
+git+https://github.com/OceanStreamIO/echopype-dev.git@oceanstream#egg=echopype

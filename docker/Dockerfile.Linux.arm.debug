@@ -1,5 +1,5 @@
 # Use Python 3.9 slim version as the base image
-FROM python:3.11-slim-arm32v7
+FROM python:3.9-slim-arm32v7
 
 # Set working directory
 WORKDIR /app
@@ -20,10 +20,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the main.py and other related files
 COPY main.py .
+COPY azure_handler.py .
 COPY echosounder_processor.py .
 COPY database_handler.py .
-COPY filter_configs.py .
-COPY iotedge/ .
+COPY azure_messages.py .
 
 # Command to run the application
 CMD ["python","-u","main.py"]

@@ -4,6 +4,7 @@ from pathlib import Path
 
 DB_PATH = "processed_files.db"
 
+
 class DBHandler:
     def __init__(self):
         self.connection = sqlite3.connect(DB_PATH)
@@ -32,7 +33,7 @@ class DBHandler:
         self.cursor.execute('''
             SELECT 1 FROM processed_files WHERE filename_raw = ?
         ''', (filename,))
-        
+
         return bool(self.cursor.fetchone())
 
     def mark_file_as_processed(self,
