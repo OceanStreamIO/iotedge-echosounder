@@ -1,4 +1,12 @@
 azure-iot-device
+git+https://github.com/OceanStreamIO/echopype-dev.git@oceanstream-iotedge#egg=echopype
+azure-storage-blob==12.8.0
+adlfs==2021.8.1
+dask[array,distributed]==2024.5.2
+xarray==2024.7.0
+zarr==2.18.2
+numpy
+pydantic
+matplotlib
+haversine
 python-dotenv
-git+https://github.com/OceanStreamIO/oceanstream.git@dev#egg=oceanstream 
-git+https://github.com/OceanStreamIO/echopype-dev.git@oceanstream#egg=echopype

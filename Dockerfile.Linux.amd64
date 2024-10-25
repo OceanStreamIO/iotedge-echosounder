@@ -1,14 +1,10 @@
-# Use Python 3.11 slim version as the base image
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Create the data directory without switching to it
 RUN mkdir /app/tmpdata
 RUN mkdir /app/procdata
 
-# Install system dependencies
 RUN apt-get update \
     && apt-get install -y git \
     && apt-get clean \
@@ -16,16 +12,12 @@ RUN apt-get update \
 
 ENV PYTHONPATH "${PYTHONPATH}:/app"
 
-# Copy requirements.txt and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the main.py and other related files
 COPY main.py .
-COPY echosounder_processor.py .
-COPY database_handler.py .
-COPY filter_configs.py .
-COPY iotedge/ .
+COPY azure_handler ./azure_handler
+COPY exports ./exports
+COPY process ./process
 
-# Command to run the application
 CMD ["python", "main.py"]
