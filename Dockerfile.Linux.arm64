@@ -8,6 +8,8 @@ RUN mkdir /app/procdata
 RUN apt-get update \
     && apt-get install -y git \
     build-essential \
+    cmake \
+    ninja-build \
     gcc \
     g++ \
     libffi-dev \
@@ -19,6 +21,7 @@ RUN apt-get update \
 ENV PYTHONPATH "${PYTHONPATH}:/app"
 
 COPY requirements.txt .
+RUN CFLAGS="-DSHUFFLE_NEON_ENABLED=1" pip install numcodecs 
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
