@@ -164,6 +164,14 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
                                                        file_base_name=file_base_name,
                                                        survey_id=survey_id,
                                                        sv_dataset=sv_dataset)
+        echograms_payload = {
+            "echogram_files": echogram_files,
+            "file_name": file_path_obj.name,
+            "dataset_id": dataset_id,
+            "campaign_id": survey_id
+        }
+        send_to_iot_hub(client, echograms_payload, output_name="output1")
+        
         logger.info(f'Processing completed for file: {file_path}')
 
         return {"filename": file_path, "output_path": sv_zarr_path, "event": "file_processed"}
