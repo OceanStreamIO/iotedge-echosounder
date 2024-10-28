@@ -26,7 +26,7 @@ def plot_sv_data(ds_Sv: xr.Dataset, file_base_name: str, output_path: str, echog
         plt.switch_backend('Agg')  # Use non-interactive backend for plotting
 
     echogram_files = []
-    for channel in range(ds_Sv.dims['channel']):
+    for channel in range(ds_Sv.sizes['channel']):
         echogram_file_path = plot_individual_channel_simplified(ds_Sv, channel, file_base_name, echogram_path, cmap)
         echogram_files.append(echogram_file_path)
 
@@ -60,10 +60,10 @@ def plot_individual_channel_simplified(ds_Sv: xr.Dataset, channel: int, file_bas
 
     # Extract relevant data and configure axis
     filtered_ds = ds_Sv['Sv']
-    if 'beam' in filtered_ds.dims:
+    if 'beam' in filtered_ds.sizes:
         filtered_ds = filtered_ds.isel(beam=0).drop('beam')
 
-    if 'channel' in filtered_ds.dims:
+    if 'channel' in filtered_ds.sizes:
         filtered_ds = filtered_ds.assign_coords({'frequency': ds_Sv.frequency_nominal})
         try:
             filtered_ds = filtered_ds.swap_dims({'channel': 'frequency'})

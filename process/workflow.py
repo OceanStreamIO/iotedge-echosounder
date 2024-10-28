@@ -111,29 +111,14 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
             channel_payload = {freq_name: freq_data, "dataset_id": dataset_id, "campaign_id": survey_id}
             send_to_iot_hub(client, data=channel_payload, output_name="output1")
 
-        try:
-            gps_data = extract_location_data(sv_dataset)
-        except Exception as e:
-            logger.error(f"Error extracting location metadata: {e}", exc_info=True)
-            gps_data = []
-
-        selected_points = select_location_points(gps_data, 5)
-
-        for idx, point in selected_points.iterrows():
-            message = create_location_message(point)
-            send_to_iot_hub(client, message, output_name="output1")
-
-        logger.info('Plotting and uploading echograms...')
         file_path_obj = Path(file_path)
-        try:
-            echogram_files = plot_and_upload_echograms(sv_dataset,
-                                                       survey_id=survey_id,
-                                                       file_base_name=file_path_obj.stem,
-                                                       blob_service_client=blob_service_client,
-                                                       container_name=ECHOGRAM_CONTAINER_NAME)
-        except Exception as e:
-            logger.error(f"Error plotting and uploading echograms: {e}", exc_info=True)
-            echogram_files = []
+        file_base_name = file_path_obj.stem
+        gps_data = process_location_data(client, sv_dataset)
+
+        echogram_files, file_path_obj = generate_and_upload_echograms(blob_service_client,
+                                                                      file_base_name=file_base_name,
+                                                                      survey_id=survey_id,
+                                                                      sv_dataset=sv_dataset)
 
         # Calculate processing times
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -161,7 +146,6 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
             "file_start_lon": echodata["Platform"]["longitude"].values[0],
             "file_end_lat": echodata["Platform"]["latitude"].values[-1],
             "file_end_lon": echodata["Platform"]["longitude"].values[-1],
-
             "start_time": first_ping_time.isoformat(),
             "dataset_id": dataset_id,
             "campaign_id": survey_id,
@@ -188,3 +172,34 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
 
     except Exception as e:
         logger.error(f"Error during processing of file {file_path}: {e}", exc_info=True)
+
+
+def generate_and_upload_echograms(blob_service_client, file_base_name=None, survey_id=None, sv_dataset=None):
+    logger.info('Plotting and uploading echograms...')
+
+    try:
+        echogram_files = plot_and_upload_echograms(sv_dataset,
+                                                   survey_id=survey_id,
+                                                   file_base_name=file_base_name,
+                                                   blob_service_client=blob_service_client,
+                                                   container_name=ECHOGRAM_CONTAINER_NAME)
+    except Exception as e:
+        logger.error(f"Error plotting and uploading echograms: {e}", exc_info=True)
+        echogram_files = []
+    return echogram_files
+
+
+def process_location_data(client, sv_dataset):
+    try:
+        gps_data = extract_location_data(sv_dataset)
+
+        selected_points = select_location_points(gps_data, 5)
+        for idx, point in selected_points.iterrows():
+            message = create_location_message(point)
+            send_to_iot_hub(client, message, output_name="output1")
+    except Exception as e:
+        logger.error(f"Error extracting location metadata: {e}", exc_info=True)
+        gps_data = []
+
+    return gps_data
+
