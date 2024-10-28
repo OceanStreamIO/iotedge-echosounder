@@ -115,11 +115,6 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
         file_base_name = file_path_obj.stem
         gps_data = process_location_data(client, sv_dataset)
 
-        echogram_files, file_path_obj = generate_and_upload_echograms(blob_service_client,
-                                                                      file_base_name=file_base_name,
-                                                                      survey_id=survey_id,
-                                                                      sv_dataset=sv_dataset)
-
         # Calculate processing times
         processing_time_ms = int((time.time() - start_time) * 1000)
         ping_times = sv_dataset.coords['ping_time'].values
@@ -149,7 +144,6 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
             "start_time": first_ping_time.isoformat(),
             "dataset_id": dataset_id,
             "campaign_id": survey_id,
-            "echograms": echogram_files,
             "processing_time_ms": processing_time_ms,
             "gps_data": gps_data.to_dict(orient="records")
         }
@@ -166,6 +160,10 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
         }
         send_to_iot_hub(client, payload_for_ml, output_name="outputml")
 
+        echogram_files = generate_and_upload_echograms(blob_service_client,
+                                                       file_base_name=file_base_name,
+                                                       survey_id=survey_id,
+                                                       sv_dataset=sv_dataset)
         logger.info(f'Processing completed for file: {file_path}')
 
         return {"filename": file_path, "output_path": sv_zarr_path, "event": "file_processed"}
