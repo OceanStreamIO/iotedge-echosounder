@@ -160,12 +160,12 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
         }
         send_to_iot_hub(client, payload_for_ml, output_name="outputml")
 
+        echograms_start_time = time.time()
         echogram_files = generate_and_upload_echograms(blob_service_client,
                                                        file_base_name=file_base_name,
                                                        survey_id=survey_id,
                                                        sv_dataset=sv_dataset)
 
-        echograms_start_time = time.time()
         processing_time_ms = int((time.time() - echograms_start_time) * 1000)
         echograms_payload = {
             "echogram_files": echogram_files,
