@@ -10,3 +10,4 @@ pydantic
 matplotlib
 haversine
 python-dotenv
+reportlab

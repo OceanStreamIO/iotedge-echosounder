@@ -3,6 +3,7 @@ from .metadata import create_instrument_metadata
 from .location import extract_location_data, select_location_points, create_location_message
 
 from .export_handler import send_to_iot_hub, plot_and_upload_echograms
+from .pdf import generate_processing_report
 
 __all__ = [
     "plot_sv_data",
@@ -12,5 +13,6 @@ __all__ = [
     "select_location_points",
     "create_location_message",
     "send_to_iot_hub",
-    "plot_and_upload_echograms"
+    "plot_and_upload_echograms",
+    "generate_processing_report"
 ]

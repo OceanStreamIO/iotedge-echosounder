@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from azure.iot.device import IoTHubModuleClient
 from azure_handler import create_blob_service_client, ensure_container_exists
 from process.convert import convert_raw_to_zarr
 from process.compute_sv import compute_Sv_and_save
-from azure.iot.device import IoTHubModuleClient
 from exports import send_to_iot_hub, plot_and_upload_echograms, select_location_points, \
-    create_location_message, create_instrument_metadata, extract_location_data
+    create_location_message, create_instrument_metadata, extract_location_data, generate_processing_report
 
 # Initialize the logger
 logger = logging.getLogger('oceanstream')
@@ -19,7 +19,7 @@ logger = logging.getLogger('oceanstream')
 CONVERTED_CONTAINER_NAME = os.getenv('CONVERTED_CONTAINER_NAME', 'converted')
 ECHOGRAM_CONTAINER_NAME = os.getenv('ECHOGRAM_CONTAINER_NAME', 'echograms')
 PROCESSED_CONTAINER_NAME = os.getenv('PROCESSED_CONTAINER_NAME', 'processed')
-
+PDF_OUTPUT_PATH = os.getenv('PDF_OUTPUT_PATH', 'pdf_output')
 
 def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties) -> Dict[str, Any]:
     """
@@ -77,10 +77,12 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
                                                                             container_name=CONVERTED_CONTAINER_NAME)
 
         echodata['Top-level'].attrs['title'] = f"{survey_name} [{survey_id}], file {base_file_name}"
-        echodata['Top-level'].attrs['summary'] = (
+        survey_summary = (
             f"EK60 raw file {base_file_name} from the {survey_name} [{survey_id}], converted to a SONAR-netCDF4 file "
             f"using echopype."
         )
+
+        echodata['Top-level'].attrs['summary'] = survey_summary
 
         # -- SONAR-netCDF4 Platform Group attributes
         # Per SONAR-netCDF4, for platform_type see https://vocab.ices.dk/?ref=311
@@ -116,6 +118,7 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
         gps_data = process_location_data(client, sv_dataset)
 
         # Calculate processing times
+        file_name = file_path_obj.name
         processing_time_ms = int((time.time() - start_time) * 1000)
         ping_times = sv_dataset.coords['ping_time'].values
         ping_times_index = pd.DatetimeIndex(ping_times)
@@ -123,40 +126,56 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
         total_recording_time = (ping_times_index[-1] - ping_times_index[0]).total_seconds()
         first_ping_time = ping_times_index[0].time()
 
+        file_npings = len(sv_dataset["ping_time"].values)
+        file_nsamples = len(sv_dataset["range_sample"].values)
+        file_start_time = str(sv_dataset["ping_time"].values[0])
+        file_end_time = str(sv_dataset["ping_time"].values[-1])
+        file_freqs = ",".join(map(str, sv_dataset["frequency_nominal"].values))
+        file_start_depth = str(sv_dataset["range_sample"].values[0])
+        file_end_depth = str(sv_dataset["range_sample"].values[-1])
+        file_start_lat = echodata["Platform"]["latitude"].values[0]
+        file_start_lon = echodata["Platform"]["longitude"].values[0]
+        file_end_lat = echodata["Platform"]["latitude"].values[-1]
+        file_end_lon = echodata["Platform"]["longitude"].values[-1]
+        start_time = first_ping_time.isoformat()
+        gps_data_records = gps_data.to_dict(orient="records")
+
+        processing_date = day_date.isoformat()
+
         payload = {
-            "file_name": file_path_obj.name,
+            "file_name": file_name,
             "zarr_path_converted": converted_zarr_path,
             "zarr_path_sv": sv_zarr_path,
             "date": day_date.isoformat(),
             "duration": total_recording_time,
 
-            "file_npings": len(sv_dataset["ping_time"].values),
-            "file_nsamples": len(sv_dataset["range_sample"].values),
-            "file_start_time": str(sv_dataset["ping_time"].values[0]),
-            "file_end_time": str(sv_dataset["ping_time"].values[-1]),
-            "file_freqs": ",".join(map(str, sv_dataset["frequency_nominal"].values)),
-            "file_start_depth": str(sv_dataset["range_sample"].values[0]),
-            "file_end_depth": str(sv_dataset["range_sample"].values[-1]),
-            "file_start_lat": echodata["Platform"]["latitude"].values[0],
-            "file_start_lon": echodata["Platform"]["longitude"].values[0],
-            "file_end_lat": echodata["Platform"]["latitude"].values[-1],
-            "file_end_lon": echodata["Platform"]["longitude"].values[-1],
-            "start_time": first_ping_time.isoformat(),
+            "file_npings": file_npings,
+            "file_nsamples": file_nsamples,
+            "file_start_time": file_start_time,
+            "file_end_time": file_end_time,
+            "file_freqs": file_freqs,
+            "file_start_depth": file_start_depth,
+            "file_end_depth": file_end_depth,
+            "file_start_lat": file_start_lat,
+            "file_start_lon": file_start_lon,
+            "file_end_lat": file_end_lat,
+            "file_end_lon": file_end_lon,
+            "start_time": start_time,
             "dataset_id": dataset_id,
             "campaign_id": survey_id,
             "processing_time_ms": processing_time_ms,
-            "gps_data": gps_data.to_dict(orient="records")
+            "gps_data": gps_data_records
         }
 
         send_to_iot_hub(client, payload, output_name="output1")
 
         payload_for_ml = {
-            "file_name": file_path_obj.name,
+            "file_name": file_name,
             "sv_zarr_path": sv_zarr_path,
             "campaign_id": survey_id,
             "dataset_id": dataset_id,
             "depth_offset": depth_offset,
-            "date": day_date.isoformat()
+            "date": processing_date
         }
         send_to_iot_hub(client, payload_for_ml, output_name="outputml")
 
@@ -176,6 +195,48 @@ def process_raw_file(client: IoTHubModuleClient, file_path: str, twin_properties
         }
         send_to_iot_hub(client, echograms_payload, output_name="output1")
         logger.info(f'Processing completed for file: {file_path}')
+
+        payload_for_pdf = {
+            "metadata": {
+                "Survey ID": survey_id,
+                "Sonar Model": sonar_model,
+                "Platform Name": platform_name,
+                "Platform Type": platform_type,
+                "Platform Code ICES": platform_code_ICES,
+                "Survey Summary": survey_summary
+            },
+            "parameters": {
+                "Waveform Mode": waveform_mode,
+                "Encode Mode": encode_mode,
+                "Depth Offset": depth_offset
+            },
+            "results": {
+                "Converted Zarr Path": converted_zarr_path,
+                "Sv Zarr Path": sv_zarr_path,
+                "Processing Date": processing_date,
+                "Total Recording Duration (seconds)": total_recording_time,
+                "Total Number of Pings": file_npings,
+                "Total Number of Samples per Ping": file_nsamples,
+                "Recording Start Time": file_start_time,
+                "Recording End Time": file_end_time,
+                "Nominal Frequencies (Hz)": file_freqs,
+                "Start Depth (meters)": file_start_depth,
+                "End Depth (meters)": file_end_depth,
+                "Start Latitude": file_start_lat,
+                "Start Longitude": file_start_lon,
+                "End Latitude": file_end_lat,
+                "End Longitude": file_end_lon,
+                "First Ping Timestamp": start_time,
+                "Dataset ID": dataset_id,
+                "Campaign ID": survey_id,
+                "Total Processing Time (milliseconds)": processing_time_ms
+            },
+            "gps_data": gps_data_records,
+            "processing_time_ms": 12345,
+            "processing_time_ms_echograms": 5000
+        }
+
+        generate_processing_report(file_name, payload_for_pdf, PDF_OUTPUT_PATH)
 
         return {"filename": file_path, "output_path": sv_zarr_path, "event": "file_processed"}
 
@@ -211,4 +272,3 @@ def process_location_data(client, sv_dataset):
         gps_data = []
 
     return gps_data
-

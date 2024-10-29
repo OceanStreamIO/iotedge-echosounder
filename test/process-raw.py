@@ -11,10 +11,11 @@ import pandas as pd
 from dotenv import load_dotenv
 from dask.distributed import Client, LocalCluster
 
-from azure_handler.message_handler import default_serializer
-from exports import select_location_points, create_instrument_metadata, \
-    extract_location_data, create_location_message, plot_sv_data
-from process import enrich_sv_dataset, convert_raw_to_zarr, compute_Sv_and_save
+from oceanstream.azure_handler.message_handler import default_serializer
+from oceanstream.process import enrich_sv_dataset, convert_raw_to_zarr, compute_Sv_and_save
+from oceanstream.exports import select_location_points, create_instrument_metadata, \
+    extract_location_data, create_location_message, plot_sv_data, generate_processing_report
+
 
 load_dotenv()
 logging.basicConfig(
@@ -84,6 +85,7 @@ def process_file(file_info, client=None):
 
         # Step 1: Read the raw file using echopype
         raw_file_path = file_info['path']
+        file_name = file_info['name']
         start_time = time.time()
         survey_id = 'HB1907'
         echodata, base_file_name, converted_zarr_path = convert_raw_to_zarr(raw_file_path, survey_id,
@@ -98,7 +100,7 @@ def process_file(file_info, client=None):
         first_ping_time = ping_times_index[0].time()
 
         print(f'File {file_info["name"]} recorded on {day_date} from {first_ping_time} for {total_recording_time}')
-
+        dataset_id = base_file_name
         json.dumps({
             "file_name": file_info["name"],
             "dataset_id": base_file_name,
@@ -141,34 +143,89 @@ def process_file(file_info, client=None):
         total_recording_time = (ping_times_index[-1] - ping_times_index[0]).total_seconds()
         first_ping_time = ping_times_index[0].time()
 
+        file_npings = len(sv_dataset["ping_time"].values)
+        file_nsamples = len(sv_dataset["range_sample"].values)
+        file_start_time = str(sv_dataset["ping_time"].values[0])
+        file_end_time = str(sv_dataset["ping_time"].values[-1])
+        file_freqs = ",".join(map(str, sv_dataset["frequency_nominal"].values))
+        file_start_depth = str(sv_dataset["range_sample"].values[0])
+        file_end_depth = str(sv_dataset["range_sample"].values[-1])
+        file_start_lat = echodata["Platform"]["latitude"].values[0]
+        file_start_lon = echodata["Platform"]["longitude"].values[0]
+        file_end_lat = echodata["Platform"]["latitude"].values[-1]
+        file_end_lon = echodata["Platform"]["longitude"].values[-1]
+        start_time = first_ping_time.isoformat()
+        gps_data_records = gps_data.to_dict(orient="records")
+
         logging.info(f'Finished processing of {file_info["name"]}')
 
         payload = {
-            "file_name": Path(raw_file_path).name,
+            "file_name": file_name,
             "zarr_path_converted": converted_zarr_path,
             "zarr_path_sv": sv_zarr_path,
             "date": day_date.isoformat(),
             "duration": total_recording_time,
 
-            "file_npings": len(sv_dataset["ping_time"].values),
-            "file_nsamples": len(sv_dataset["range_sample"].values),
-            "file_start_time": str(sv_dataset["ping_time"].values[0]),
-            "file_end_time": str(sv_dataset["ping_time"].values[-1]),
-            "file_freqs": ",".join(map(str, sv_dataset["frequency_nominal"].values)),
-            "file_start_depth": str(sv_dataset["range_sample"].values[0]),
-            "file_end_depth": str(sv_dataset["range_sample"].values[-1]),
-            "file_start_lat": echodata["Platform"]["latitude"].values[0],
-            "file_start_lon": echodata["Platform"]["longitude"].values[0],
-            "file_end_lat": echodata["Platform"]["latitude"].values[-1],
-            "file_end_lon": echodata["Platform"]["longitude"].values[-1],
-
-            "start_time": first_ping_time.isoformat(),
-            "dataset_id": base_file_name,
-            "campaign_id": 'HB1907',
-            "echograms": echogram_files,
+            "file_npings": file_npings,
+            "file_nsamples": file_nsamples,
+            "file_start_time": file_start_time,
+            "file_end_time": file_end_time,
+            "file_freqs": file_freqs,
+            "file_start_depth": file_start_depth,
+            "file_end_depth": file_end_depth,
+            "file_start_lat": file_start_lat,
+            "file_start_lon": file_start_lon,
+            "file_end_lat": file_end_lat,
+            "file_end_lon": file_end_lon,
+            "start_time": start_time,
+            "dataset_id": dataset_id,
+            "campaign_id": survey_id,
             "processing_time_ms": processing_time_ms,
-            "gps_data": gps_data.to_dict(orient="records")
+            "gps_data": gps_data_records
         }
+
+        payload_for_pdf = {
+            "metadata": {
+                "Survey ID": survey_id,
+                "Sonar Model": 'EK60',
+                "Platform Name": 'R/V Falkor',
+                "Platform Type": 'Vessel',
+                "Platform Code ICES": 'FALKOR',
+                "Survey Summary": 'This is a test survey',
+            },
+            "parameters": {
+                "Waveform Mode": 'CW',
+                "Encode Mode": 'power',
+                "Depth Offset": 5,
+            },
+            "results": {
+                "Converted Zarr Path": converted_zarr_path,
+                "Sv Zarr Path": sv_zarr_path,
+                "Processing Date": day_date.isoformat(),
+                "Total Recording Duration (seconds)": total_recording_time,
+
+                "Total Number of Pings": file_npings,
+                "Total Number of Samples per Ping": file_nsamples,
+                "Recording Start Time": file_start_time,
+                "Recording End Time": file_end_time,
+                "Nominal Frequencies (Hz)": file_freqs,
+                "Start Depth (meters)": file_start_depth,
+                "End Depth (meters)": file_end_depth,
+                "Start Latitude": file_start_lat,
+                "Start Longitude": file_start_lon,
+                "End Latitude": file_end_lat,
+                "End Longitude": file_end_lon,
+                "First Ping Timestamp": start_time,
+                "Dataset ID": dataset_id,
+                "Campaign ID": survey_id,
+                "Total Processing Time (milliseconds)": processing_time_ms
+            },
+            "gps_data": gps_data_records,
+            "processing_time_ms": 12345,
+            "processing_time_ms_echograms": 5000
+        }
+
+        generate_processing_report(file_name, payload_for_pdf, 'pdf_reports')
 
         return file_info['path']
 
