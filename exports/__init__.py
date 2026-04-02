@@ -1,9 +1,10 @@
 from .plot import plot_sv_data, plot_individual_channel_simplified
 from .metadata import create_instrument_metadata
 from .location import extract_location_data, select_location_points, create_location_message
-
 from .export_handler import send_to_iot_hub, plot_and_upload_echograms
 from .pdf import generate_processing_report
+from .echograms import generate_echograms
+from .telemetry import send_processing_telemetry
 
 __all__ = [
     "plot_sv_data",
@@ -14,5 +15,7 @@ __all__ = [
     "create_location_message",
     "send_to_iot_hub",
     "plot_and_upload_echograms",
-    "generate_processing_report"
+    "generate_processing_report",
+    "generate_echograms",
+    "send_processing_telemetry",
 ]

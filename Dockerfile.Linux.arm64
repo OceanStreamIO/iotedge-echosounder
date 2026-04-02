@@ -1,32 +1,64 @@
-FROM arm64v8/python:3.11-slim
+# =============================================================================
+# Jetson Orin NX — JetPack 6.x / L4T R36.4 / CUDA 12.x
+# Multi-stage build: stage 1 builds C extensions, stage 2 is the runtime image
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: build C extensions (numcodecs with NEON, wheels for native deps)
+# ---------------------------------------------------------------------------
+FROM nvcr.io/nvidia/l4t-ml:r36.4.0-py3 AS builder
+
+WORKDIR /build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential cmake ninja-build gcc g++ \
+       libffi-dev libssl-dev python3-dev git \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Build numcodecs with NEON SIMD
+RUN CFLAGS="-DSHUFFLE_NEON_ENABLED=1" pip install --no-cache-dir numcodecs
+
+# Install echopype from local source (CUDA extras)
+COPY echopype /build/echopype
+RUN pip install --no-cache-dir -e /build/echopype[cuda]
+
+# Install ek80_udp_client from local source
+COPY ek80_udp_client /build/ek80_udp_client
+RUN pip install --no-cache-dir -e /build/ek80_udp_client
+
+# Install remaining Python dependencies
+COPY requirements.txt /build/
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime image
+# ---------------------------------------------------------------------------
+FROM nvcr.io/nvidia/l4t-ml:r36.4.0-py3
 
 WORKDIR /app
 
-RUN mkdir /app/tmpdata
-RUN mkdir /app/procdata
+# Copy installed Python packages from builder
+COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-RUN apt-get update \
-    && apt-get install -y git \
-    build-essential \
-    cmake \
-    ninja-build \
-    gcc \
-    g++ \
-    libffi-dev \
-    libssl-dev \
-    python3-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# Copy echopype and ek80_udp_client source (installed editable)
+COPY --from=builder /build/echopype /echopype
+COPY --from=builder /build/ek80_udp_client /ek80_udp_client
 
-ENV PYTHONPATH "${PYTHONPATH}:/app"
+# Create data directories
+RUN mkdir -p /app/tmpdata /app/procdata /data/raw /data/processed /data/config /data/blobroot
 
-COPY requirements.txt .
-RUN CFLAGS="-DSHUFFLE_NEON_ENABLED=1" pip install numcodecs 
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONPATH="/app:/echopype:/ek80_udp_client/src"
+ENV PYTHONUNBUFFERED=1
+ENV MPLBACKEND=Agg
 
+# Copy application code
 COPY main.py .
+COPY config.py .
 COPY azure_handler ./azure_handler
 COPY exports ./exports
 COPY process ./process
+COPY ingest ./ingest
 
-CMD ["python","-u","main.py"]
+CMD ["python", "-u", "main.py"]

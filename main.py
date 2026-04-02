@@ -1,158 +1,164 @@
+"""IoT Edge echosounder module — entry point.
+
+Dual-mode processing:
+- **realtime**: Connects to EK80 via UDP, subscribes to SampleData,
+  buffers pings, and processes through the full pipeline (Sv → denoise
+  → MVBS → NASC → echograms) with GPU acceleration.
+- **file**: Receives ``rawfileadded`` messages from the filenotifier
+  module and processes raw files through the same pipeline.
+- **both**: Both modes run concurrently.
+
+On-demand C2D commands are always available for manual triggers and
+status queries.
+
+Configuration comes from:
+- IoT Hub module twin desired properties
+- Environment variables (see Dockerfile and streambase.config.json)
+"""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
 import signal
-import threading
-from dotenv import load_dotenv
-from azure_handler import create_client
-from threading import Lock
+import sys
+from pathlib import Path
 
-# Load environment variables from .env file
+from dotenv import load_dotenv
+
 load_dotenv()
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger('oceanstream')
+# --- Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True,
+)
+logger = logging.getLogger("oceanstream")
 
-# Event indicating client stop
-stop_event = threading.Event()
-
-twin_properties = {}
-twin_properties_lock = Lock()
-
-
-# Signal handler for interruptions and closing
-def signal_handler(signal, frame):
-    logger.info(f"Received signal {signal}. Shutting down...")
-    stop_event.set()
+# Quiet noisy libraries
+for _noisy in ("azure", "adlfs", "distributed", "dask", "fsspec", "zarr", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+async def async_main() -> None:
+    """Async entry point — sets up IoT Hub client, config, and mode dispatcher."""
+    from azure_handler import create_client, create_storage
+    from config import EdgeConfig
+    from ingest.file_trigger import handle_raw_file_added, parse_input_message
+    from ingest.on_demand import handle_c2d_command, job_worker
+    from ingest.realtime import RealtimeIngestion
+    from process.day_store import DayStore
+    from process.pipeline import process_echodata
 
+    # --- IoT Hub client ---
+    client = create_client()
+    logger.info("IoT Hub module client initialized")
 
-def get_initial_module_twin(client):
-    """
-    Retrieve the initial module twin properties.
-    """
-    # Get the twin properties
-    twin_properties = client.get_twin()
+    # --- Configuration from twin ---
+    twin = client.get_twin()
+    desired = twin.get("desired", {})
+    config = EdgeConfig.from_twin_and_env(desired)
+    logging.getLogger("oceanstream").setLevel(getattr(logging, config.log_level.upper(), logging.INFO))
+    logger.info("Config loaded: mode=%s, sonar=%s, gpu=%s", config.processing_mode, config.sonar_model, config.use_gpu)
 
-    # Access the desired properties for this module
-    desired_properties = twin_properties.get("desired", {})
-
-    return desired_properties
-
-
-def handle_input_message(client, message):
-    """
-    Handle incoming messages from IoT Hub.
-
-    Parameters:
-    - client: IoTHubModuleClient
-        The IoT Hub client.
-    - message: Message
-        The received message from IoT Hub.
-    """
-    from process.workflow import process_raw_file
-    global twin_properties
-
+    # Log GPU status
     try:
-        logger.info(f'Received message from IoT Hub: {message}')
+        from echopype.utils.gpu import has_cuda
+        logger.info("CUDA available: %s", has_cuda())
+    except Exception:
+        logger.info("CUDA check failed — GPU disabled")
 
-        with twin_properties_lock:
-            current_twin_properties = twin_properties.copy()
+    # --- Storage backend ---
+    storage = create_storage(
+        backend=config.storage_backend,
+        base_path=config.output_base_path,
+    )
+    day_store = DayStore(storage, container=config.processed_container)
+    logger.info("Storage backend: %s", config.storage_backend)
 
+    # --- Job queue for on-demand processing ---
+    job_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+    # --- Twin update handler ---
+    def on_twin_update(patch):
+        nonlocal config
+        logger.info("Twin patch received: %s", list(patch.keys()))
+        config.update_from_twin(patch)
+        try:
+            client.patch_twin_reported_properties(patch)
+        except Exception as e:
+            logger.error("Failed to report twin: %s", e)
+
+    client.on_twin_desired_properties_patch_received = on_twin_update
+
+    # --- File trigger handler (rawfileadded input) ---
+    def on_message(message):
         if message.input_name == "rawfileadded":
-            logger.info('Processing message from input "rawfileadded".')
-            byte_str = message.data
-            dict_obj = json.loads(byte_str.decode("utf-8"))
-            message_type = dict_obj.get("event", None)
+            data = parse_input_message(message)
+            if data.get("event") == "fileadd":
+                asyncio.ensure_future(
+                    handle_raw_file_added(data, config, day_store, client)
+                )
+        elif message.input_name == "c2d":
+            data = parse_input_message(message)
+            asyncio.ensure_future(
+                handle_c2d_command(data, config, day_store, client, job_queue)
+            )
 
-            logger.info(f'Message content: {dict_obj}')
-            logger.info(f'Message type: {message_type}')
+    client.on_message_received = on_message
 
-            if message_type == "fileadd":
-                result = process_raw_file(client, dict_obj["file_added_path"], current_twin_properties)
-                logger.info(f'Processing result: {result}')
+    # --- Start background tasks ---
+    tasks = []
 
-    except Exception as e:
-        logger.error(f"Error handling input message: {e}", exc_info=True)
+    # Job worker (always active)
+    tasks.append(asyncio.create_task(job_worker(job_queue, config, day_store, client)))
+
+    # Real-time ingestion (if enabled)
+    realtime: RealtimeIngestion | None = None
+    if config.processing_mode in ("realtime", "both"):
+        async def on_batch(echodata, cfg):
+            await process_echodata(echodata, cfg, day_store, client)
+
+        realtime = RealtimeIngestion(config, on_batch=on_batch)
+        await realtime.start()
+
+    logger.info("Module started — mode=%s, waiting for events...", config.processing_mode)
+
+    # --- Run until terminated ---
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        logger.info("Shutdown signal received")
+        stop_event.set()
+
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _signal_handler)
+
+    await stop_event.wait()
+
+    # --- Graceful shutdown ---
+    logger.info("Shutting down...")
+    if realtime:
+        await realtime.stop()
+
+    for task in tasks:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    client.shutdown()
+    logger.info("Module stopped")
 
 
 def main():
-    global twin_properties
-    client = create_client()
-
-    initial_properties = get_initial_module_twin(client)
-    logger.info(f"Initial twin desired properties: {initial_properties}")
-
-    with twin_properties_lock:
-        logger.info(f"1. twin properties initial update: {initial_properties}")
-        sonar_model = initial_properties.get("sonar_model", "EK60")
-        waveform_mode = initial_properties.get("waveform_mode", "CW")
-        encode_mode = initial_properties.get("encode_mode", "power")
-        depth_offset = initial_properties.get("depth_offset", "")
-        survey_id = initial_properties.get("survey_id", "")
-        survey_name = initial_properties.get("survey_name", "")
-        platform_type = initial_properties.get("platform_type", "")
-        platform_name = initial_properties.get("platform_name", "")
-        platform_code_ICES = initial_properties.get("platform_code_ICES", "")
-
-        properties = {
-            "sonar_model": sonar_model,
-            "waveform_mode": waveform_mode,
-            "encode_mode": encode_mode,
-            "depth_offset": depth_offset,
-            "survey_id": survey_id,
-            "survey_name": survey_name,
-            "platform_type": platform_type,
-            "platform_name": platform_name,
-            "platform_code_ICES": platform_code_ICES
-        }
-
-        twin_properties.update(properties)
-
-    def twin_update_callback(update):
-        """
-        Callback function to handle updates to module twin properties.
-        """
-        global twin_properties
-        logger.info(f"Received module twin update: {update}")
-
-        # Access the desired properties from the twin update
-        with twin_properties_lock:
-            desired_properties = update.get('desired', {})
-            logger.info(f"Updated twin desired properties: {desired_properties}")
-
-            twin_properties.update(desired_properties)
-            client.patch_twin_reported_properties(desired_properties)
-
-    # Set the input message handler and pass the client instance
-    client.on_message_received = lambda message: handle_input_message(client, message)
-
-    client.on_twin_desired_properties_patch_received = twin_update_callback
-
-    # Set up signal handler for module termination
-    def module_termination_handler(signal, frame):
-        logger.info("IoTHubClient sample stopped by Edge")
-        stop_event.set()
-
-    signal.signal(signal.SIGTERM, module_termination_handler)
-
-    # Run the sample
-    loop = asyncio.get_event_loop()
-    try:
-        logger.info("Starting IoT Hub client...")
-        loop.run_forever()
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        raise
-    finally:
-        logger.info("Shutting down IoT Hub Client...")
-        loop.run_until_complete(client.shutdown())
-        loop.close()
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
