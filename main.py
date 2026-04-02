@@ -83,6 +83,11 @@ async def async_main() -> None:
     # --- Job queue for on-demand processing ---
     job_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 
+    # Capture the running loop for thread-safe callback scheduling.
+    # Azure IoT SDK callbacks run on SDK worker threads, not the asyncio
+    # event loop thread — we must use call_soon_threadsafe.
+    loop = asyncio.get_running_loop()
+
     # --- Twin update handler ---
     def on_twin_update(patch):
         nonlocal config
@@ -100,13 +105,15 @@ async def async_main() -> None:
         if message.input_name == "rawfileadded":
             data = parse_input_message(message)
             if data.get("event") == "fileadd":
-                asyncio.ensure_future(
-                    handle_raw_file_added(data, config, day_store, client)
+                loop.call_soon_threadsafe(
+                    loop.create_task,
+                    handle_raw_file_added(data, config, day_store, client),
                 )
         elif message.input_name == "c2d":
             data = parse_input_message(message)
-            asyncio.ensure_future(
-                handle_c2d_command(data, config, day_store, client, job_queue)
+            loop.call_soon_threadsafe(
+                loop.create_task,
+                handle_c2d_command(data, config, day_store, client, job_queue),
             )
 
     client.on_message_received = on_message
@@ -135,7 +142,6 @@ async def async_main() -> None:
         logger.info("Shutdown signal received")
         stop_event.set()
 
-    loop = asyncio.get_event_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _signal_handler)
 

@@ -9,10 +9,46 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields
 from typing import Any, Dict, Literal, Optional
 
 logger = logging.getLogger("oceanstream")
+
+
+def _parse_bool(val: Any, default: bool = True) -> bool:
+    """Parse a value that might be bool, str, int, or None into a Python bool.
+
+    Handles IoT Hub twin quirks where booleans arrive as ``"false"`` strings.
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.lower() not in ("false", "0", "no", "off", "")
+    return default
+
+
+def _unwrap(val: Any) -> Any:
+    """Unwrap ``{"value": X}`` IoT Hub twin wrapper, if present."""
+    if isinstance(val, dict) and "value" in val:
+        return val["value"]
+    return val
+
+
+# Twin key → dataclass field name (for keys that differ from field names)
+_TWIN_KEY_MAP: dict[str, str] = {"Log_Level": "log_level"}
+
+# Fields whose values need _parse_bool
+_BOOL_FIELDS: set[str] = {"use_gpu", "denoise_enabled", "plot_echogram"}
+
+# Fields whose values need int()
+_INT_FIELDS: set[str] = {"ek80_port", "realtime_buffer_seconds"}
+
+# Fields whose values need float()
+_FLOAT_FIELDS: set[str] = {"depth_offset"}
 
 
 @dataclass
@@ -83,10 +119,7 @@ class EdgeConfig:
 
         def _get(key: str, default: Any = "") -> Any:
             val = twin_desired.get(key, default)
-            # Unwrap {"value": X} wrapper used by IoT Hub twin
-            if isinstance(val, dict) and "value" in val:
-                val = val["value"]
-            return val
+            return _unwrap(val)
 
         depth_offset_raw = _get("depth_offset", 0)
         if isinstance(depth_offset_raw, str):
@@ -106,9 +139,9 @@ class EdgeConfig:
             ek80_host=os.getenv("EK80_HOST", _get("ek80_host", "192.168.0.105")),
             ek80_port=int(os.getenv("EK80_PORT", _get("ek80_port", 37655))),
             realtime_buffer_seconds=int(_get("realtime_buffer_seconds", 60)),
-            use_gpu=bool(_get("use_gpu", True)),
-            denoise_enabled=bool(_get("denoise_enabled", True)),
-            plot_echogram=bool(_get("plot_echogram", True)),
+            use_gpu=_parse_bool(_get("use_gpu", True)),
+            denoise_enabled=_parse_bool(_get("denoise_enabled", True)),
+            plot_echogram=_parse_bool(_get("plot_echogram", True)),
             mvbs_range_bin=str(_get("mvbs_range_bin", "0.5")),
             mvbs_ping_time_bin=str(_get("mvbs_ping_time_bin", "10s")),
             nasc_range_bin=str(_get("nasc_range_bin", "10")),
@@ -123,7 +156,34 @@ class EdgeConfig:
         )
 
     def update_from_twin(self, patch: Dict[str, Any]) -> None:
-        """Apply a twin desired-properties patch in place."""
-        new = self.from_twin_and_env(patch)
-        for f in self.__dataclass_fields__:
-            setattr(self, f, getattr(new, f))
+        """Apply a twin desired-properties patch in place.
+
+        Only updates fields that are present in the patch.  Unknown keys
+        (e.g. ``$version``) are ignored.  This avoids resetting fields
+        that were not included in a partial patch.
+        """
+        known_fields = {f.name for f in fields(self)}
+
+        for key, raw_val in patch.items():
+            val = _unwrap(raw_val)
+            # Map twin key to field name (e.g. "Log_Level" → "log_level")
+            field_name = _TWIN_KEY_MAP.get(key, key)
+            if field_name not in known_fields:
+                continue  # skip $version, unknown keys
+
+            if field_name in _BOOL_FIELDS:
+                setattr(self, field_name, _parse_bool(val))
+            elif field_name in _INT_FIELDS:
+                try:
+                    setattr(self, field_name, int(val))
+                except (ValueError, TypeError):
+                    pass
+            elif field_name in _FLOAT_FIELDS:
+                try:
+                    setattr(self, field_name, float(val))
+                except (ValueError, TypeError):
+                    pass
+            else:
+                setattr(self, field_name, str(val) if not isinstance(val, str) else val)
+
+        logger.info("Config updated from twin patch: %s", [k for k in patch if not k.startswith("$")])

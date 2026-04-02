@@ -320,10 +320,16 @@ async def process_day_pipeline(
     if "echograms" in stages and config.plot_echogram:
         try:
             from exports.echograms import generate_echograms
+            try:
+                ds_mvbs = day_store.load_product(target_date, "mvbs")
+                if not ds_mvbs.data_vars:
+                    ds_mvbs = None
+            except Exception:
+                ds_mvbs = None
             echogram_files = generate_echograms(
                 ds_sv=ds_sv,
                 ds_denoised=ds_denoised if config.denoise_enabled else None,
-                ds_mvbs=day_store.load_product(target_date, "mvbs") or None,
+                ds_mvbs=ds_mvbs,
                 day=target_date,
                 config=config,
             )

@@ -8,6 +8,12 @@
 # ---------------------------------------------------------------------------
 FROM nvcr.io/nvidia/l4t-ml:r36.4.0-py3 AS builder
 
+# Pin dependency versions via build args
+ARG ECHOPYPE_REPO=https://github.com/OceanStreamIO/echopype.git
+ARG ECHOPYPE_REF=oceanstream/cuda-acceleration
+ARG EK80_REPO=https://github.com/OceanStreamIO/ek80_udp_client.git
+ARG EK80_REF=main
+
 WORKDIR /build
 
 RUN apt-get update \
@@ -19,13 +25,13 @@ RUN apt-get update \
 # Build numcodecs with NEON SIMD
 RUN CFLAGS="-DSHUFFLE_NEON_ENABLED=1" pip install --no-cache-dir numcodecs
 
-# Install echopype from local source (CUDA extras)
-COPY echopype /build/echopype
-RUN pip install --no-cache-dir -e /build/echopype[cuda]
+# Clone and install echopype (CUDA extras)
+RUN git clone --branch $ECHOPYPE_REF --depth 1 $ECHOPYPE_REPO /build/echopype \
+    && pip install --no-cache-dir /build/echopype[cuda]
 
-# Install ek80_udp_client from local source
-COPY ek80_udp_client /build/ek80_udp_client
-RUN pip install --no-cache-dir -e /build/ek80_udp_client
+# Clone and install ek80_udp_client
+RUN git clone --branch $EK80_REF --depth 1 $EK80_REPO /build/ek80_udp_client \
+    && pip install --no-cache-dir /build/ek80_udp_client
 
 # Install remaining Python dependencies
 COPY requirements.txt /build/
@@ -42,14 +48,9 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy echopype and ek80_udp_client source (installed editable)
-COPY --from=builder /build/echopype /echopype
-COPY --from=builder /build/ek80_udp_client /ek80_udp_client
-
 # Create data directories
 RUN mkdir -p /app/tmpdata /app/procdata /data/raw /data/processed /data/config /data/blobroot
 
-ENV PYTHONPATH="/app:/echopype:/ek80_udp_client/src"
 ENV PYTHONUNBUFFERED=1
 ENV MPLBACKEND=Agg
 

@@ -116,25 +116,46 @@ class RealtimeIngestion:
             channel_list = [ch.strip() for ch in channels_str.split(";") if ch.strip()]
             logger.info("Discovered %d channels: %s", len(channel_list), channel_list)
 
-            # Phase 3: Get navigation data for environment
+            # Phase 3: Query per-channel calibration/transmit parameters
+            # These are static during a ping session — query once before subscribing
+            ch_params: dict[str, dict[str, float | str]] = {}
+            for ch_id in channel_list:
+                ch_params[ch_id] = await _query_channel_params(client, ch_id)
+                logger.info(
+                    "Channel %s: freq=%.0f Hz, Tx=%.0f W, PD=%.6f s, SI=%.6f s",
+                    ch_id,
+                    ch_params[ch_id]["frequency"],
+                    ch_params[ch_id]["transmit_power"],
+                    ch_params[ch_id]["pulse_duration"],
+                    ch_params[ch_id]["sample_interval"],
+                )
+
+            # Phase 4: Get navigation data
             try:
                 lat = float(await client.get_parameter("OwnShip/Latitude") or 0)
                 lon = float(await client.get_parameter("OwnShip/Longitude") or 0)
             except (ValueError, TypeError):
                 lat, lon = 0.0, 0.0
 
-            # Phase 4: Setup accumulator
+            # Phase 5: Setup accumulator with full channel config
             accumulator = AccumulatorClass(sonar_model=self.config.sonar_model)
 
             for ch_id in channel_list:
-                # Extract frequency from channel ID if possible (e.g. "ES200" → 200 kHz)
-                freq = _parse_frequency_from_channel_id(ch_id)
-                accumulator.register_channel_simple(
+                p = ch_params[ch_id]
+                accumulator.register_channel(ChannelConfigClass(
                     channel_id=ch_id,
-                    frequency=freq,
-                )
+                    frequency=p["frequency"],
+                    pulse_duration=p["pulse_duration"],
+                    sample_interval=p["sample_interval"],
+                    gain=p["gain"],
+                    sa_correction=p["sa_correction"],
+                    equivalent_beam_angle=p["equivalent_beam_angle"],
+                    beam_width_alongship=p["beam_width_alongship"],
+                    beam_width_athwartship=p["beam_width_athwartship"],
+                    transceiver_type=p["transceiver_type"],
+                ))
 
-            # Phase 5: Subscribe to SampleData for each channel
+            # Phase 6: Subscribe to SampleData for each channel
             subscriptions = {}
             for ch_id in channel_list:
                 try:
@@ -166,11 +187,18 @@ class RealtimeIngestion:
                 try:
                     from ek80_udp_client import decode_sample_power
                     sample = decode_sample_power(prd.payload)
+                    p = ch_params[ch_id]
 
                     accumulator.add_ping(
                         timestamp=sample.time,
                         channel_id=ch_id,
                         power_samples=np.array(sample.samples, dtype=np.int16),
+                        transmit_power=p["transmit_power"],
+                        pulse_duration=p["pulse_duration"],
+                        sample_interval=p["sample_interval"],
+                        frequency=p["frequency"],
+                        sound_speed=p["sound_speed"],
+                        absorption=p["absorption"],
                     )
                 except Exception as e:
                     logger.debug("Failed to decode ping for %s: %s", ch_id, e)
@@ -242,3 +270,50 @@ def _parse_frequency_from_channel_id(ch_id: str) -> float:
         return float(match.group(1)) * 1000.0
 
     return 200_000.0  # default
+
+
+def _parse_float(val: str | None, default: float = 0.0) -> float:
+    """Safely parse a string to float."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+async def _query_channel_params(client, ch_id: str) -> dict[str, float | str]:
+    """Query per-channel calibration and transmit parameters from the EK80.
+
+    Uses GetParameter on ``TransceiverMgr/{ch_id}/{suffix}`` paths.
+    Returns a dict with all values needed for ChannelConfig and add_ping().
+    """
+    suffixes = [
+        "Frequency", "SampleInterval", "TransmitPower", "PulseLength",
+        "SoundVelocity", "AbsorptionCoefficient",
+        "Gain", "SaCorrection", "EquivalentBeamAngle",
+        "BeamWidthAlongship", "BeamWidthAthwartship",
+        "TransceiverType",
+    ]
+    raw: dict[str, str | None] = {}
+    for s in suffixes:
+        try:
+            raw[s] = await client.get_parameter(f"TransceiverMgr/{ch_id}/{s}")
+        except Exception:
+            raw[s] = None
+
+    freq = _parse_float(raw["Frequency"], _parse_frequency_from_channel_id(ch_id))
+    return {
+        "frequency": freq,
+        "sample_interval": _parse_float(raw["SampleInterval"], 0.000016),
+        "transmit_power": _parse_float(raw["TransmitPower"], 100.0),
+        "pulse_duration": _parse_float(raw["PulseLength"], 0.001024),
+        "sound_speed": _parse_float(raw["SoundVelocity"], 1500.0),
+        "absorption": _parse_float(raw["AbsorptionCoefficient"], 0.0),
+        "gain": _parse_float(raw["Gain"], 25.0),
+        "sa_correction": _parse_float(raw["SaCorrection"], 0.0),
+        "equivalent_beam_angle": _parse_float(raw["EquivalentBeamAngle"], -20.7),
+        "beam_width_alongship": _parse_float(raw["BeamWidthAlongship"], 7.0),
+        "beam_width_athwartship": _parse_float(raw["BeamWidthAthwartship"], 7.0),
+        "transceiver_type": raw.get("TransceiverType") or "WBT",
+    }

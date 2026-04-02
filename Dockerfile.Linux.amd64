@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+ARG ECHOPYPE_REPO=https://github.com/OceanStreamIO/echopype.git
+ARG ECHOPYPE_REF=oceanstream/cuda-acceleration
+ARG EK80_REPO=https://github.com/OceanStreamIO/ek80_udp_client.git
+ARG EK80_REF=main
+
 WORKDIR /app
 
 RUN mkdir -p /app/tmpdata /app/procdata /data/raw /data/processed /data/config /data/blobroot
@@ -9,19 +14,18 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install echopype from local source
-COPY echopype /echopype
-RUN pip install --no-cache-dir -e /echopype
+# Clone and install echopype
+RUN git clone --branch $ECHOPYPE_REF --depth 1 $ECHOPYPE_REPO /opt/echopype \
+    && pip install --no-cache-dir /opt/echopype
 
-# Install ek80_udp_client from local source
-COPY ek80_udp_client /ek80_udp_client
-RUN pip install --no-cache-dir -e /ek80_udp_client
+# Clone and install ek80_udp_client
+RUN git clone --branch $EK80_REF --depth 1 $EK80_REPO /opt/ek80_udp_client \
+    && pip install --no-cache-dir /opt/ek80_udp_client
 
 # Install remaining dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-ENV PYTHONPATH="/app:/echopype:/ek80_udp_client/src"
 ENV PYTHONUNBUFFERED=1
 ENV MPLBACKEND=Agg
 

@@ -190,16 +190,19 @@ def create_storage(backend: str = "azure-blob-edge", **kwargs) -> StorageBackend
     string missing or edge blob module unavailable), falls back to
     ``local``.
     """
+    base_path = kwargs.get("base_path", "/app/processed")
     if backend == "azure-blob-edge":
         try:
-            return AzureBlobEdgeStorage(**kwargs)
+            return AzureBlobEdgeStorage(
+                connection_string=kwargs.get("connection_string"),
+            )
         except Exception as e:
             logger.warning("Azure Blob Edge unavailable (%s), falling back to local storage", e)
-            return LocalStorage(kwargs.get("base_path", "/app/processed"))
+            return LocalStorage(base_path)
     elif backend == "minio":
         # MinIO uses S3-compatible interface — same pattern as Azure but
         # with different endpoint. Placeholder for future implementation.
         logger.warning("MinIO backend not yet implemented, falling back to local storage")
-        return LocalStorage(kwargs.get("base_path", "/app/processed"))
+        return LocalStorage(base_path)
     else:
-        return LocalStorage(kwargs.get("base_path", kwargs.get("output_base_path", "/app/processed")))
+        return LocalStorage(base_path)
