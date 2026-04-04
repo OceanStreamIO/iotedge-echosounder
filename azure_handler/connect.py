@@ -2,7 +2,6 @@ import os
 import logging
 
 from typing import Optional
-from adlfs import AzureBlobFileSystem
 from azure.storage.blob import BlobServiceClient, ContainerClient
 
 # Initialize the logger
@@ -23,20 +22,6 @@ def create_blob_service_client(connect_str=None) -> BlobServiceClient:
         raise EnvironmentError("AZURE_STORAGE_CONNECTION_STRING environment variable not set.")
 
     return BlobServiceClient.from_connection_string(connect_str)
-
-
-def get_azure_blob_filesystem() -> AzureBlobFileSystem:
-    """
-    Get Azure Blob FileSystem Mapper for Dask.
-
-    Returns:
-    - AzureBlobFileSystem: The Azure Blob FileSystem Mapper.
-    """
-    connect_str: Optional[str] = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-    if not connect_str:
-        raise EnvironmentError("AZURE_STORAGE_CONNECTION_STRING environment variable not set.")
-
-    return AzureBlobFileSystem(connection_string=connect_str)
 
 
 def ensure_container_exists(blob_service_client: BlobServiceClient, container_name: str):

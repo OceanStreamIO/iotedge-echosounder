@@ -1,55 +1,44 @@
 # =============================================================================
 # Jetson Orin NX — JetPack 6.x / L4T R36.4 / CUDA 12.x
-# Multi-stage build: stage 1 builds C extensions, stage 2 is the runtime image
+# Single-stage build using standard Python image.
+# Requires Docker --runtime=nvidia (host CUDA libs mapped into container).
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Stage 1: build C extensions (numcodecs with NEON, wheels for native deps)
-# ---------------------------------------------------------------------------
-FROM nvcr.io/nvidia/l4t-ml:r36.4.0-py3 AS builder
+FROM python:3.11-slim-bookworm
 
 # Pin dependency versions via build args
 ARG ECHOPYPE_REPO=https://github.com/OceanStreamIO/echopype.git
-ARG ECHOPYPE_REF=oceanstream/cuda-acceleration
-ARG EK80_REPO=https://github.com/OceanStreamIO/ek80_udp_client.git
-ARG EK80_REF=main
-
-WORKDIR /build
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       build-essential cmake ninja-build gcc g++ \
-       libffi-dev libssl-dev python3-dev git \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Build numcodecs with NEON SIMD
-RUN CFLAGS="-DSHUFFLE_NEON_ENABLED=1" pip install --no-cache-dir numcodecs
-
-# Clone and install echopype (CUDA extras)
-RUN git clone --branch $ECHOPYPE_REF --depth 1 $ECHOPYPE_REPO /build/echopype \
-    && pip install --no-cache-dir /build/echopype[cuda]
-
-# Clone and install ek80_udp_client
-RUN git clone --branch $EK80_REF --depth 1 $EK80_REPO /build/ek80_udp_client \
-    && pip install --no-cache-dir /build/ek80_udp_client
-
-# Install remaining Python dependencies
-COPY requirements.txt /build/
-RUN pip install --no-cache-dir -r requirements.txt
-
-# ---------------------------------------------------------------------------
-# Stage 2: runtime image
-# ---------------------------------------------------------------------------
-FROM nvcr.io/nvidia/l4t-ml:r36.4.0-py3
+ARG ECHOPYPE_REF=oceanstream-integration
+ARG OCEANSTREAM_REPO=https://github.com/OceanStreamIO/oceanstream-cli.git
+ARG OCEANSTREAM_REF=feat/batch_processing
 
 WORKDIR /app
 
-# Copy installed Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential gcc g++ git libhdf5-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Create data directories
 RUN mkdir -p /app/tmpdata /app/procdata /data/raw /data/processed /data/config /data/blobroot
+
+# Install cupy for GPU acceleration (CUDA 12.x from host via nvidia runtime)
+RUN pip install --no-cache-dir cupy-cuda12x
+
+# Clone and install echopype (oceanstream-integration branch includes PingAccumulator + GPU)
+RUN git clone --branch $ECHOPYPE_REF --depth 1 $ECHOPYPE_REPO /tmp/echopype \
+    && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 pip install --no-cache-dir /tmp/echopype \
+    && rm -rf /tmp/echopype
+
+# Clone and install oceanstream (core only — echodata module deps satisfied by requirements.txt)
+RUN pip install --no-cache-dir poetry-core \
+    && git clone --branch $OCEANSTREAM_REF --depth 1 $OCEANSTREAM_REPO /tmp/oceanstream \
+    && pip install --no-cache-dir --no-deps /tmp/oceanstream \
+    && rm -rf /tmp/oceanstream
+
+# Install remaining Python dependencies
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
 ENV PYTHONUNBUFFERED=1
 ENV MPLBACKEND=Agg

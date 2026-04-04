@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -107,9 +108,15 @@ class LocalStorage(StorageBackend):
 class AzureBlobEdgeStorage(StorageBackend):
     """Azure Blob Storage on IoT Edge (via localhost:11002).
 
-    Uses the standard azure-storage-blob SDK connecting to the edge
-    blob storage module, and adlfs for Zarr I/O.
+    Uses ``azure-storage-blob`` SDK directly with a pinned API version
+    (``2019-07-07``) that the edge blob module supports.  The ``adlfs``
+    library sends newer API headers that the emulator rejects, so we
+    avoid it entirely and implement a thin ``MutableMapping`` wrapper
+    for Zarr I/O.
     """
+
+    # Edge blob storage supports up to 2019-07-07
+    _API_VERSION = "2019-07-07"
 
     def __init__(self, connection_string: Optional[str] = None):
         self.connection_string = connection_string or os.getenv(
@@ -119,32 +126,37 @@ class AzureBlobEdgeStorage(StorageBackend):
             raise EnvironmentError(
                 "AZURE_STORAGE_CONNECTION_STRING not set for AzureBlobEdgeStorage"
             )
-        self._fs = None
+        self._client = None
 
     @property
-    def fs(self):
-        if self._fs is None:
-            from adlfs import AzureBlobFileSystem
-            self._fs = AzureBlobFileSystem(connection_string=self.connection_string)
-        return self._fs
+    def client(self):
+        if self._client is None:
+            from azure.storage.blob import BlobServiceClient
+            self._client = BlobServiceClient.from_connection_string(
+                self.connection_string, api_version=self._API_VERSION,
+            )
+        return self._client
 
     def _ensure_container(self, container: str) -> None:
-        from azure.storage.blob import BlobServiceClient
-        client = BlobServiceClient.from_connection_string(self.connection_string)
-        cc = client.get_container_client(container)
-        if not cc.exists():
+        cc = self.client.get_container_client(container)
+        try:
+            cc.get_container_properties()
+        except Exception:
             cc.create_container()
             logger.info("Created container: %s", container)
 
     def save_zarr(self, dataset: xr.Dataset, path: str, mode: str = "w") -> str:
-        container = path.split("/")[0]
-        self._ensure_container(container)
         for var in dataset.data_vars:
             dataset[var].encoding.clear()
         for coord in dataset.coords:
             dataset[coord].encoding.clear()
-        store = self.fs.get_mapper(path)
-        dataset.to_zarr(store=store, mode=mode)
+        container = path.split("/")[0]
+        prefix = "/".join(path.split("/")[1:])
+        self._ensure_container(container)
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "store.zarr")
+            dataset.to_zarr(local_path, mode=mode)
+            self._upload_dir(container, prefix, local_path)
         logger.info("Saved Zarr to blob: %s", path)
         return path
 
@@ -153,32 +165,94 @@ class AzureBlobEdgeStorage(StorageBackend):
             dataset[var].encoding.clear()
         for coord in dataset.coords:
             dataset[coord].encoding.clear()
-        store = self.fs.get_mapper(path)
-        dataset.to_zarr(store=store, mode="a", append_dim=append_dim)
+        container = path.split("/")[0]
+        prefix = "/".join(path.split("/")[1:])
+        self._ensure_container(container)
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "store.zarr")
+            # Download existing store first so xarray can append
+            self._download_dir(container, prefix, local_path)
+            dataset.to_zarr(local_path, mode="a", append_dim=append_dim)
+            self._upload_dir(container, prefix, local_path)
         logger.info("Appended to blob: %s", path)
 
     def load_zarr(self, path: str, **kwargs) -> xr.Dataset:
-        store = self.fs.get_mapper(path)
-        return xr.open_zarr(store, **kwargs)
+        container = path.split("/")[0]
+        prefix = "/".join(path.split("/")[1:])
+        tmp = tempfile.mkdtemp()
+        local_path = os.path.join(tmp, "store.zarr")
+        self._download_dir(container, prefix, local_path)
+        return xr.open_zarr(local_path, **kwargs)
+
+    def _upload_dir(self, container: str, prefix: str, local_path: str) -> None:
+        """Upload all files in a local directory to blob storage."""
+        cc = self.client.get_container_client(container)
+        for root, _dirs, files in os.walk(local_path):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, local_path)
+                blob_name = f"{prefix}/{rel}" if prefix else rel
+                bc = cc.get_blob_client(blob_name)
+                with open(fpath, "rb") as f:
+                    bc.upload_blob(f, overwrite=True)
+
+    def _download_dir(self, container: str, prefix: str, local_path: str) -> None:
+        """Download all blobs under a prefix to a local directory."""
+        cc = self.client.get_container_client(container)
+        blob_prefix = prefix.rstrip("/") + "/"
+        os.makedirs(local_path, exist_ok=True)
+        for blob in cc.list_blobs(name_starts_with=blob_prefix):
+            rel = blob.name[len(blob_prefix):]
+            dest = os.path.join(local_path, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            bc = cc.get_blob_client(blob.name)
+            with open(dest, "wb") as f:
+                f.write(bc.download_blob().readall())
 
     def save_file(self, data: bytes, path: str) -> str:
         container = path.split("/")[0]
         self._ensure_container(container)
         blob_path = "/".join(path.split("/")[1:])
-        from azure.storage.blob import BlobServiceClient
-        client = BlobServiceClient.from_connection_string(self.connection_string)
-        bc = client.get_blob_client(container=container, blob=blob_path)
+        bc = self.client.get_blob_client(container=container, blob=blob_path)
         bc.upload_blob(data, overwrite=True)
         logger.info("Uploaded file to blob: %s", path)
         return path
 
     def exists(self, path: str) -> bool:
-        return self.fs.exists(path)
+        parts = path.split("/")
+        container = parts[0]
+        prefix = "/".join(parts[1:])
+        cc = self.client.get_container_client(container)
+        try:
+            cc.get_container_properties()
+        except Exception:
+            return False
+        # Check if it's a blob or a virtual directory (has children)
+        try:
+            bc = cc.get_blob_client(prefix)
+            bc.get_blob_properties()
+            return True
+        except Exception:
+            pass
+        # Check if any blobs exist under this prefix
+        blobs = list(cc.list_blobs(name_starts_with=prefix + "/", results_per_page=1))
+        return len(blobs) > 0
 
     def list_stores(self, prefix: str) -> list[str]:
+        parts = prefix.split("/")
+        container = parts[0]
+        blob_prefix = "/".join(parts[1:]) if len(parts) > 1 else ""
+        cc = self.client.get_container_client(container)
         try:
-            items = self.fs.ls(prefix, detail=False)
-            return [i for i in items if i.endswith(".zarr")]
+            blobs = cc.list_blobs(name_starts_with=blob_prefix)
+            # Find unique .zarr directories
+            stores = set()
+            for b in blobs:
+                name = b.name
+                idx = name.find(".zarr/")
+                if idx >= 0:
+                    stores.add(f"{container}/{name[:idx + 5]}")
+            return sorted(stores)
         except Exception:
             return []
 

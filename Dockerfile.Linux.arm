@@ -1,29 +1,46 @@
-# Use Python 3.9 slim version as the base image
+# =============================================================================
+# ARM32 build — lightweight edge devices (non-Jetson)
+# For Jetson Orin (ARM64 + GPU), use Dockerfile.Linux.arm64 instead.
+# =============================================================================
+
 FROM python:3.11-slim-arm32v7
 
-# Set working directory
+ARG ECHOPYPE_REPO=https://github.com/OceanStreamIO/echopype.git
+ARG ECHOPYPE_REF=oceanstream-integration
+ARG OCEANSTREAM_REPO=https://github.com/OceanStreamIO/oceanstream-cli.git
+ARG OCEANSTREAM_REF=feat/batch_processing
+
 WORKDIR /app
 
-# Create the data directory without switching to it
-RUN mkdir /app/tmpdata
-RUN mkdir /app/procdata
+RUN mkdir -p /app/tmpdata /app/procdata /data/raw /data/processed /data/config /data/blobroot
 
-# Install system dependencies
 RUN apt-get update \
-    && apt-get install -y git \
+    && apt-get install -y --no-install-recommends git build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements.txt and install Python dependencies
+# Clone and install echopype
+RUN git clone --branch $ECHOPYPE_REF --depth 1 $ECHOPYPE_REPO /tmp/echopype \
+    && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 pip install --no-cache-dir /tmp/echopype \
+    && rm -rf /tmp/echopype
+
+# Clone and install oceanstream (core only)
+RUN pip install --no-cache-dir poetry-core \
+    && git clone --branch $OCEANSTREAM_REF --depth 1 $OCEANSTREAM_REPO /tmp/oceanstream \
+    && pip install --no-cache-dir --no-deps /tmp/oceanstream \
+    && rm -rf /tmp/oceanstream
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the main.py and other related files
-COPY main.py .
-COPY echosounder_processor.py .
-COPY database_handler.py .
-COPY filter_configs.py .
-COPY iotedge/ .
+ENV PYTHONUNBUFFERED=1
+ENV MPLBACKEND=Agg
 
-# Command to run the application
-CMD ["python","-u","main.py"]
+COPY main.py .
+COPY config.py .
+COPY azure_handler ./azure_handler
+COPY exports ./exports
+COPY process ./process
+COPY ingest ./ingest
+
+CMD ["python", "-u", "main.py"]

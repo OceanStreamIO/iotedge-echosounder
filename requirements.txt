@@ -1,24 +1,24 @@
 # Azure IoT Edge SDK
 azure-iot-device~=2.14
 
-# Echopype — installed from local repo (cuda-acceleration branch)
-# pip install -e /echopype[cuda]
-# echopype is NOT listed here; it is installed in the Dockerfile from local source.
+# echopype + oceanstream are installed from git in Dockerfile (no extras).
+# echopype: OceanStreamIO/echopype@oceanstream-integration
+# oceanstream: OceanStreamIO/oceanstream@main (core only, --no-deps)
 
-# EK80 UDP client — installed from local repo
-# pip install -e /ek80_udp_client
-# Not listed here; installed in the Dockerfile from local source.
+# WebSocket client for ek80-service
+websockets~=13.1
 
-# Azure storage — edge blob storage client
+# Azure storage — edge blob storage client (pinned API version for edge compat)
 azure-storage-blob~=12.24
-adlfs~=2024.7
 
-# Data stack
+# Data stack (also satisfies oceanstream.echodata runtime deps)
 dask[array]~=2024.12
-xarray~=2024.11
-zarr~=2.18
-numpy~=1.26
+xarray>=2025.3
+zarr>=3
+numpy>=2.0
 pandas~=2.2
+scipy~=1.14
+bottleneck~=1.4
 
 # GPU — cupy installed from JetPack-compatible wheel in Dockerfile
 # cupy-cuda12x>=13.0
@@ -28,4 +28,5 @@ pydantic~=2.10
 matplotlib~=3.9
 haversine~=2.9
 python-dotenv~=1.0
+psutil~=6.1
 reportlab~=4.2

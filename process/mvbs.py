@@ -1,4 +1,7 @@
-"""Compute Mean Volume Backscattering Strength (MVBS) for edge processing."""
+"""Compute Mean Volume Backscattering Strength (MVBS) for edge processing.
+
+Uses oceanstream's xarray-2026-safe ``compute_mvbs`` wrapper.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,6 @@ logger = logging.getLogger("oceanstream")
 def compute_mvbs(
     ds_sv: xr.Dataset,
     *,
-    range_var: str = "echo_range",
     range_bin: str = "0.5m",
     ping_time_bin: str = "10s",
 ) -> xr.Dataset:
@@ -22,10 +24,8 @@ def compute_mvbs(
     ----------
     ds_sv
         Sv or denoised Sv dataset.
-    range_var
-        Range variable to bin over (``"echo_range"`` or ``"depth"``).
     range_bin
-        Range bin size (e.g. ``"0.5m"``, ``"20m"``).
+        Range bin size (e.g. ``"0.5m"``, ``"1m"``).
     ping_time_bin
         Time bin size (e.g. ``"10s"``, ``"20s"``).
 
@@ -34,13 +34,12 @@ def compute_mvbs(
     xr.Dataset
         MVBS dataset.
     """
-    from echopype.commongrid import compute_MVBS
+    from oceanstream.echodata.compute import compute_mvbs as os_compute_mvbs
 
     logger.info("Computing MVBS (range_bin=%s, ping_time_bin=%s)", range_bin, ping_time_bin)
 
-    ds_mvbs = compute_MVBS(
+    ds_mvbs = os_compute_mvbs(
         ds_sv,
-        range_var=range_var,
         range_bin=range_bin,
         ping_time_bin=ping_time_bin,
     )

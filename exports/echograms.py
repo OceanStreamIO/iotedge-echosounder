@@ -31,12 +31,16 @@ def generate_echograms(
     ds_mvbs: Optional[xr.Dataset] = None,
     day: date,
     config: "EdgeConfig",
+    output_subdir: Optional[str] = None,
 ) -> List[str]:
     """Generate echogram PNGs for all available products.
 
     Returns a list of saved file paths.
     """
-    output_dir = Path(config.output_base_path) / day.isoformat() / "echograms"
+    if output_subdir:
+        output_dir = Path(config.output_base_path) / output_subdir
+    else:
+        output_dir = Path(config.output_base_path) / day.isoformat() / "echograms"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     files: List[str] = []

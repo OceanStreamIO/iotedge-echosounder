@@ -4,6 +4,7 @@ from .denoise import denoise
 from .mvbs import compute_mvbs
 from .nasc import compute_nasc
 from .day_store import DayStore
+from .segment_store import SegmentStore
 
 __all__ = [
     "convert_raw_file",
@@ -13,4 +14,5 @@ __all__ = [
     "compute_mvbs",
     "compute_nasc",
     "DayStore",
+    "SegmentStore",
 ]

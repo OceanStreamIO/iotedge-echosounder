@@ -1,6 +1,5 @@
 from .connect import (
     create_blob_service_client,
-    get_azure_blob_filesystem,
     ensure_container_exists
 )
 
@@ -22,7 +21,6 @@ from .storage import (
 
 __all__ = [
     "create_blob_service_client",
-    "get_azure_blob_filesystem",
     "create_client",
     "ensure_container_exists",
     "provision_iot_central_device",

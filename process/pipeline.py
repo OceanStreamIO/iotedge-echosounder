@@ -1,17 +1,21 @@
-"""Unified processing pipeline orchestrator.
+"""Segment-based processing pipeline orchestrator.
 
-Called by both real-time (UDP) and file-based ingestion paths.
-Implements the full edge processing flow:
+Called by both real-time (WebSocket) and file-based ingestion paths.
+Each batch produces an independent *segment* under the day folder:
 
-  EchoData → Sv (GPU) → denoise → append day store → MVBS → NASC → echograms
+  EchoData → Sv → [denoise] → [seabed] → [MVBS] → [NASC] → [echograms]
+  → segment folder with all products + metadata.json
 
-Also provides ``process_raw_file_pipeline()`` for file triggers and
-``process_day_pipeline()`` for on-demand reprocessing.
+Stages in brackets are configurable via ``EdgeConfig`` toggles.
+
+A separate consolidation job (future) merges segments into daily
+products and optionally deletes processed segments.
 """
 
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import time
 from datetime import date
@@ -26,53 +30,41 @@ if TYPE_CHECKING:
     from azure.iot.device import IoTHubModuleClient
     from config import EdgeConfig
     from echopype.echodata.echodata import EchoData
-    from process.day_store import DayStore
+    from process.segment_store import SegmentStore
 
 logger = logging.getLogger("oceanstream")
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Core: process one batch of EchoData
+# Core: process one batch of EchoData → segment
 # ═══════════════════════════════════════════════════════════════════════
 
 
 async def process_echodata(
     echodata: "EchoData",
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: Optional["IoTHubModuleClient"] = None,
 ) -> Dict[str, Any]:
-    """Process a single EchoData batch through the full pipeline.
+    """Process a single EchoData batch and save as an independent segment.
 
     Steps:
       1. Compute Sv (with GPU if available)
-      2. Append to daily Zarr store
+      2. Save Sv to segment
       3. Denoise (if enabled)
-      4. Compute MVBS
-      5. Compute NASC
-      6. Generate echograms
-      7. Send telemetry
-
-    Parameters
-    ----------
-    echodata
-        Converted EchoData (from file or PingAccumulator).
-    config
-        Edge processing configuration.
-    day_store
-        Daily Zarr store manager.
-    client
-        IoT Hub module client for sending results (optional).
-
-    Returns
-    -------
-    dict
-        Processing result metadata.
+      4. Seabed detection (if enabled)
+      5. Compute MVBS (if enabled)
+      6. Compute NASC (if enabled + GPS available)
+      7. Generate echograms (if enabled)
+      8. Write metadata.json
+      9. Send telemetry
     """
     from process.compute_sv import compute_sv
+    from process.config_adapter import to_denoise_config
     from process.denoise import denoise
     from process.mvbs import compute_mvbs
     from process.nasc import compute_nasc
+    from process.seabed import apply_seabed
 
     start_time = time.time()
     result: Dict[str, Any] = {"status": "ok"}
@@ -91,57 +83,79 @@ async def process_echodata(
         logger.warning("No valid pings after Sv computation — skipping")
         return {"status": "skipped", "reason": "no valid pings"}
 
-    # Determine the day
-    first_time = ds_sv["ping_time"].values[0]
-    day = pd.Timestamp(first_time).date()
+    # Derive segment identity
+    day = segment_store.segment_day(ds_sv)
+    seg_name = segment_store.segment_name(ds_sv)
 
     result["day"] = day.isoformat()
+    result["segment"] = seg_name
     result["n_pings"] = int(n_pings)
 
-    # --- Step 2: Append to daily store ---
-    sv_path = day_store.append_sv(ds_sv, day)
+    # --- Step 2: Save Sv ---
+    sv_path = segment_store.save_zarr(ds_sv, day, seg_name, "sv")
     result["sv_path"] = sv_path
     _release_memory()
 
     # --- Step 3: Denoise ---
-    ds_denoised = ds_sv  # fallback if denoising disabled
+    ds_denoised = ds_sv
     if config.denoise_enabled:
         try:
-            ds_denoised = denoise(ds_sv, use_gpu=config.use_gpu)
-            day_store.save_product(ds_denoised, day, "sv_denoised")
+            denoise_config = to_denoise_config(config)
+            ds_denoised = denoise(ds_sv, config=denoise_config)
+            segment_store.save_zarr(ds_denoised, day, seg_name, "sv_denoised")
+            result["denoise"] = "ok"
         except Exception as e:
             logger.error("Denoising failed: %s", e, exc_info=True)
+            result["denoise"] = f"error: {e}"
     _release_memory()
+
+    # --- Step 3b: Seabed ---
+    if config.seabed_enabled:
+        try:
+            ds_denoised = apply_seabed(
+                ds_denoised,
+                method=config.seabed_method,
+                max_range=config.seabed_max_range,
+            )
+            segment_store.save_zarr(ds_denoised, day, seg_name, "sv_seabed")
+            result["seabed"] = "ok"
+        except Exception as e:
+            logger.error("Seabed detection failed: %s", e, exc_info=True)
+            result["seabed"] = f"error: {e}"
+        _release_memory()
 
     # --- Step 4: MVBS ---
-    try:
-        ds_mvbs = compute_mvbs(
-            ds_denoised,
-            range_bin=config.mvbs_range_bin + "m",
-            ping_time_bin=config.mvbs_ping_time_bin,
-        )
-        if ds_mvbs.sizes:
-            day_store.save_product(ds_mvbs, day, "mvbs")
-            result["mvbs_computed"] = True
-    except Exception as e:
-        logger.error("MVBS failed: %s", e, exc_info=True)
-        result["mvbs_computed"] = False
-    _release_memory()
+    ds_mvbs = None
+    if config.mvbs_enabled:
+        try:
+            ds_mvbs = compute_mvbs(
+                ds_denoised,
+                range_bin=config.mvbs_range_bin + "m",
+                ping_time_bin=config.mvbs_ping_time_bin,
+            )
+            if ds_mvbs.sizes:
+                segment_store.save_zarr(ds_mvbs, day, seg_name, "mvbs")
+                result["mvbs"] = "ok"
+        except Exception as e:
+            logger.error("MVBS failed: %s", e, exc_info=True)
+            result["mvbs"] = f"error: {e}"
+        _release_memory()
 
     # --- Step 5: NASC ---
-    try:
-        ds_nasc = compute_nasc(
-            ds_denoised,
-            range_bin=config.nasc_range_bin + "m",
-            dist_bin=config.nasc_dist_bin + "nmi",
-        )
-        if ds_nasc.sizes:
-            day_store.save_product(ds_nasc, day, "nasc")
-            result["nasc_computed"] = True
-    except Exception as e:
-        logger.warning("NASC failed (may need GPS): %s", e)
-        result["nasc_computed"] = False
-    _release_memory()
+    if config.nasc_enabled:
+        try:
+            ds_nasc = compute_nasc(
+                ds_denoised,
+                range_bin=config.nasc_range_bin + "m",
+                dist_bin=config.nasc_dist_bin + "nmi",
+            )
+            if ds_nasc.sizes:
+                segment_store.save_zarr(ds_nasc, day, seg_name, "nasc")
+                result["nasc"] = "ok"
+        except Exception as e:
+            logger.warning("NASC failed (may need GPS): %s", e)
+            result["nasc"] = f"skipped: {e}"
+        _release_memory()
 
     # --- Step 6: Echograms ---
     if config.plot_echogram:
@@ -150,19 +164,48 @@ async def process_echodata(
             echogram_files = generate_echograms(
                 ds_sv=ds_sv,
                 ds_denoised=ds_denoised if config.denoise_enabled else None,
-                ds_mvbs=ds_mvbs if result.get("mvbs_computed") else None,
+                ds_mvbs=ds_mvbs,
                 day=day,
                 config=config,
+                output_subdir=f"segments/{seg_name}/echograms",
             )
             result["echogram_files"] = echogram_files
         except Exception as e:
             logger.error("Echogram generation failed: %s", e, exc_info=True)
-    _release_memory()
+        _release_memory()
 
-    # --- Step 7: Telemetry ---
+    # --- Step 7: Metadata ---
     processing_time_ms = int((time.time() - start_time) * 1000)
     result["processing_time_ms"] = processing_time_ms
 
+    metadata = {
+        "segment": seg_name,
+        "day": day.isoformat(),
+        "n_pings": int(n_pings),
+        "n_channels": int(ds_sv.sizes.get("channel", 0)),
+        "processing_time_ms": processing_time_ms,
+        "products": [k for k in ("sv", "sv_denoised", "sv_seabed", "mvbs", "nasc") if result.get(k) == "ok" or k == "sv"],
+        "config": {
+            "sonar_model": config.sonar_model,
+            "waveform_mode": config.waveform_mode,
+            "denoise_enabled": config.denoise_enabled,
+            "denoise_methods": config.denoise_methods,
+            "mvbs_enabled": config.mvbs_enabled,
+            "mvbs_range_bin": config.mvbs_range_bin,
+            "mvbs_ping_time_bin": config.mvbs_ping_time_bin,
+            "nasc_enabled": config.nasc_enabled,
+            "nasc_range_bin": config.nasc_range_bin,
+            "nasc_dist_bin": config.nasc_dist_bin,
+            "seabed_enabled": config.seabed_enabled,
+            "use_gpu": config.use_gpu,
+        },
+    }
+    try:
+        segment_store.save_metadata(metadata, day, seg_name)
+    except Exception as e:
+        logger.error("Failed to save segment metadata: %s", e)
+
+    # --- Step 8: Telemetry ---
     if client:
         try:
             from exports.telemetry import send_processing_telemetry
@@ -171,8 +214,8 @@ async def process_echodata(
             logger.error("Telemetry send failed: %s", e)
 
     logger.info(
-        "Pipeline complete for %s: %d pings in %dms",
-        day, n_pings, processing_time_ms,
+        "Segment %s complete: %d pings in %dms",
+        seg_name, n_pings, processing_time_ms,
     )
     return result
 
@@ -185,7 +228,7 @@ async def process_echodata(
 async def process_raw_file_pipeline(
     file_path: str,
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: Optional["IoTHubModuleClient"] = None,
 ) -> Dict[str, Any]:
     """Full pipeline for a single raw file.
@@ -210,7 +253,7 @@ async def process_raw_file_pipeline(
     except Exception as e:
         logger.debug("Could not set platform metadata: %s", e)
 
-    result = await process_echodata(echodata, config, day_store, client)
+    result = await process_echodata(echodata, config, segment_store, client)
     result["source_file"] = Path(file_path).name
     result["total_time_ms"] = int((time.time() - start) * 1000)
 
@@ -230,115 +273,6 @@ async def process_raw_file_pipeline(
         except Exception as e:
             logger.error("ML payload send failed: %s", e)
 
-    return result
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# On-demand: reprocess a day
-# ═══════════════════════════════════════════════════════════════════════
-
-
-async def process_day_pipeline(
-    target_date: date,
-    stages: List[str],
-    config: "EdgeConfig",
-    day_store: "DayStore",
-    client: Optional["IoTHubModuleClient"] = None,
-) -> Dict[str, Any]:
-    """Reprocess a day's Sv data through selected stages.
-
-    Parameters
-    ----------
-    target_date
-        Day to reprocess.
-    stages
-        List of stages to run: ``"denoise"``, ``"mvbs"``, ``"nasc"``,
-        ``"echograms"``.
-    config
-        Edge processing configuration.
-    day_store
-        Daily Zarr store manager.
-    client
-        IoT Hub module client.
-
-    Returns
-    -------
-    dict
-        Reprocessing result.
-    """
-    from process.denoise import denoise
-    from process.mvbs import compute_mvbs
-    from process.nasc import compute_nasc
-
-    start = time.time()
-    result: Dict[str, Any] = {"status": "ok", "day": target_date.isoformat(), "stages": stages}
-
-    ds_sv = day_store.load_sv(target_date)
-    if not ds_sv.sizes:
-        return {"status": "error", "reason": f"no Sv data for {target_date}"}
-
-    ds_denoised = ds_sv
-
-    if "denoise" in stages and config.denoise_enabled:
-        try:
-            ds_denoised = denoise(ds_sv, use_gpu=config.use_gpu)
-            day_store.save_product(ds_denoised, target_date, "sv_denoised")
-            result["denoise"] = "ok"
-        except Exception as e:
-            logger.error("Day denoise failed: %s", e, exc_info=True)
-            result["denoise"] = f"error: {e}"
-        _release_memory()
-
-    if "mvbs" in stages:
-        try:
-            ds_mvbs = compute_mvbs(
-                ds_denoised,
-                range_bin=config.mvbs_range_bin + "m",
-                ping_time_bin=config.mvbs_ping_time_bin,
-            )
-            day_store.save_product(ds_mvbs, target_date, "mvbs")
-            result["mvbs"] = "ok"
-        except Exception as e:
-            logger.error("Day MVBS failed: %s", e, exc_info=True)
-            result["mvbs"] = f"error: {e}"
-        _release_memory()
-
-    if "nasc" in stages:
-        try:
-            ds_nasc = compute_nasc(
-                ds_denoised,
-                range_bin=config.nasc_range_bin + "m",
-                dist_bin=config.nasc_dist_bin + "nmi",
-            )
-            day_store.save_product(ds_nasc, target_date, "nasc")
-            result["nasc"] = "ok"
-        except Exception as e:
-            logger.warning("Day NASC failed: %s", e)
-            result["nasc"] = f"error: {e}"
-        _release_memory()
-
-    if "echograms" in stages and config.plot_echogram:
-        try:
-            from exports.echograms import generate_echograms
-            try:
-                ds_mvbs = day_store.load_product(target_date, "mvbs")
-                if not ds_mvbs.data_vars:
-                    ds_mvbs = None
-            except Exception:
-                ds_mvbs = None
-            echogram_files = generate_echograms(
-                ds_sv=ds_sv,
-                ds_denoised=ds_denoised if config.denoise_enabled else None,
-                ds_mvbs=ds_mvbs,
-                day=target_date,
-                config=config,
-            )
-            result["echograms"] = echogram_files
-        except Exception as e:
-            logger.error("Day echograms failed: %s", e, exc_info=True)
-        _release_memory()
-
-    result["processing_time_ms"] = int((time.time() - start) * 1000)
     return result
 
 

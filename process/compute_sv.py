@@ -1,8 +1,7 @@
 """Compute volume backscattering strength (Sv) with GPU acceleration.
 
-Wraps ``echopype.calibrate.compute_Sv`` and enrichment (add depth,
-location, split-beam angles) into a single function suitable for edge
-processing.
+Wraps ``echopype.calibrate.compute_Sv`` and enrichment via oceanstream's
+``add_depth_to_sv`` into a single function suitable for edge processing.
 """
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ def compute_sv(
         added where available.
     """
     from echopype.calibrate import compute_Sv
-    from echopype.consolidate import add_depth
+    from oceanstream.echodata.consolidate.depth import add_depth_to_sv
 
     # Compute Sv
     compute_kwargs = {}
@@ -64,12 +63,19 @@ def compute_sv(
     )
     ds_sv = compute_Sv(echodata, use_gpu=gpu_flag, **compute_kwargs)
 
-    # Add depth
+    # Add depth via oceanstream (handles auto_flags & downward convention)
     logger.info("Adding depth (offset=%.1fm)", depth_offset)
     try:
-        ds_sv = add_depth(ds_sv, depth_offset=depth_offset)
+        ds_sv = add_depth_to_sv(
+            ds_sv, echodata=echodata, depth_offset=depth_offset,
+        )
     except Exception as e:
-        logger.warning("Failed to add depth: %s", e)
+        logger.warning("Failed to add depth: %s — falling back to echopype", e)
+        try:
+            from echopype.consolidate import add_depth
+            ds_sv = add_depth(ds_sv, depth_offset=depth_offset)
+        except Exception as e2:
+            logger.warning("Fallback add_depth also failed: %s", e2)
 
     # Add location from EchoData Platform group
     try:

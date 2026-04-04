@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Dict
 if TYPE_CHECKING:
     from azure.iot.device import IoTHubModuleClient
     from config import EdgeConfig
-    from process.day_store import DayStore
+    from process.segment_store import SegmentStore
 
 logger = logging.getLogger("oceanstream")
 
@@ -27,7 +27,7 @@ logger = logging.getLogger("oceanstream")
 async def handle_c2d_command(
     message_data: Dict[str, Any],
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: "IoTHubModuleClient",
     job_queue: asyncio.Queue,
 ) -> Dict[str, Any]:
@@ -39,8 +39,8 @@ async def handle_c2d_command(
         Parsed JSON with ``command`` key and command-specific payload.
     config
         Current edge configuration.
-    day_store
-        Daily Zarr store manager.
+    segment_store
+        Segment-based Zarr store manager.
     client
         IoT Hub module client.
     job_queue
@@ -54,11 +54,11 @@ async def handle_c2d_command(
     command = message_data.get("command", "")
 
     if command == "process_raw_files":
-        return await _cmd_process_raw_files(message_data, config, day_store, client, job_queue)
+        return await _cmd_process_raw_files(message_data, config, segment_store, client, job_queue)
     elif command == "process_day":
-        return await _cmd_process_day(message_data, config, day_store, client, job_queue)
+        return await _cmd_process_day(message_data, config, segment_store, client, job_queue)
     elif command == "get_status":
-        return _cmd_get_status(config, day_store, job_queue)
+        return _cmd_get_status(config, segment_store, job_queue)
     elif command == "set_config":
         return _cmd_set_config(message_data, config)
     else:
@@ -69,7 +69,7 @@ async def handle_c2d_command(
 async def _cmd_process_raw_files(
     data: Dict[str, Any],
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: "IoTHubModuleClient",
     job_queue: asyncio.Queue,
 ) -> Dict[str, Any]:
@@ -99,7 +99,7 @@ async def _cmd_process_raw_files(
 async def _cmd_process_day(
     data: Dict[str, Any],
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: "IoTHubModuleClient",
     job_queue: asyncio.Queue,
 ) -> Dict[str, Any]:
@@ -112,8 +112,9 @@ async def _cmd_process_day(
     except (ValueError, TypeError):
         return {"status": "error", "reason": f"invalid date: {date_str}"}
 
-    if not day_store.day_exists(target_date):
-        return {"status": "error", "reason": f"no data for {date_str}"}
+    segments = segment_store.list_segments(target_date)
+    if not segments:
+        return {"status": "error", "reason": f"no segments for {date_str}"}
 
     import uuid
     job_id = str(uuid.uuid4())[:8]
@@ -131,7 +132,7 @@ async def _cmd_process_day(
 
 def _cmd_get_status(
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     job_queue: asyncio.Queue,
 ) -> Dict[str, Any]:
     """Return current processing status."""
@@ -154,7 +155,7 @@ def _cmd_get_status(
     except Exception:
         pass
 
-    days = day_store.list_days()
+    days = segment_store.list_days()
 
     return {
         "status": "ok",
@@ -189,7 +190,7 @@ def _cmd_set_config(
 async def job_worker(
     job_queue: asyncio.Queue,
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: "IoTHubModuleClient",
 ) -> None:
     """Background worker that processes jobs from the queue sequentially.
@@ -198,7 +199,7 @@ async def job_worker(
     Jetson's limited 16 GB memory.
     """
     from azure_handler.message_handler import send_to_hub
-    from process.pipeline import process_raw_file_pipeline, process_day_pipeline
+    from process.pipeline import process_raw_file_pipeline
 
     while True:
         job = await job_queue.get()
@@ -212,7 +213,7 @@ async def job_worker(
                 result = await process_raw_file_pipeline(
                     file_path=file_path,
                     config=config,
-                    day_store=day_store,
+                    segment_store=segment_store,
                     client=client,
                 )
                 result["job_id"] = job_id
@@ -222,13 +223,8 @@ async def job_worker(
                 target_date = job["date"]
                 stages = job["stages"]
                 logger.info("Job %s: reprocessing %s stages=%s", job_id, target_date, stages)
-                result = await process_day_pipeline(
-                    target_date=target_date,
-                    stages=stages,
-                    config=config,
-                    day_store=day_store,
-                    client=client,
-                )
+                # Segment-based: reprocessing individual segments is a future feature
+                result = {"status": "not_implemented", "reason": "segment-based reprocessing pending"}
                 result["job_id"] = job_id
                 send_to_hub(client, data=result, output_name="output1")
 

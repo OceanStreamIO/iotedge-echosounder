@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict
 if TYPE_CHECKING:
     from azure.iot.device import IoTHubModuleClient
     from config import EdgeConfig
-    from process.day_store import DayStore
+    from process.segment_store import SegmentStore
 
 logger = logging.getLogger("oceanstream")
 
@@ -22,7 +22,7 @@ logger = logging.getLogger("oceanstream")
 async def handle_raw_file_added(
     message_data: Dict[str, Any],
     config: "EdgeConfig",
-    day_store: "DayStore",
+    segment_store: "SegmentStore",
     client: "IoTHubModuleClient",
 ) -> Dict[str, Any]:
     """Process a raw file triggered by an IoT Edge message.
@@ -34,8 +34,8 @@ async def handle_raw_file_added(
         Expected keys: ``event``, ``file_added_path``.
     config
         Current edge configuration.
-    day_store
-        Daily Zarr store manager.
+    segment_store
+        Segment-based Zarr store manager.
     client
         IoT Hub module client for sending results.
 
@@ -61,7 +61,7 @@ async def handle_raw_file_added(
     result = await process_raw_file_pipeline(
         file_path=file_path,
         config=config,
-        day_store=day_store,
+        segment_store=segment_store,
         client=client,
     )
 

@@ -1,14 +1,19 @@
 """Noise removal for edge Sv datasets.
 
-Wraps ``echopype.clean.remove_background_noise`` with GPU acceleration
-and provides a single ``denoise()`` entry point.
+Wraps ``oceanstream.echodata.denoise.apply_denoising`` which supports
+four methods: background, transient, impulse, and attenuation signal
+removal — all configurable via ``DenoiseConfig``.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Optional
 
 import xarray as xr
+
+if TYPE_CHECKING:
+    from oceanstream.echodata.config import DenoiseConfig
 
 logger = logging.getLogger("oceanstream")
 
@@ -16,50 +21,32 @@ logger = logging.getLogger("oceanstream")
 def denoise(
     ds_sv: xr.Dataset,
     *,
-    ping_num: int = 20,
-    range_sample_num: int = 20,
-    background_noise_max: str | None = None,
-    SNR_threshold: str = "3.0dB",
-    use_gpu: bool = True,
+    config: Optional["DenoiseConfig"] = None,
 ) -> xr.Dataset:
-    """Remove background noise from Sv dataset.
+    """Apply multi-method denoising to an Sv dataset.
 
     Parameters
     ----------
     ds_sv
         Sv dataset (output of ``compute_sv``).
-    ping_num
-        Number of pings for noise estimation window.
-    range_sample_num
-        Number of range samples for noise estimation window.
-    background_noise_max
-        Maximum noise level (e.g. ``"-125dB"``). ``None`` disables cap.
-    SNR_threshold
-        Signal-to-noise ratio threshold (e.g. ``"3.0dB"``).
-    use_gpu
-        Whether to use GPU acceleration.
+    config
+        Oceanstream ``DenoiseConfig``.  If ``None``, defaults are used
+        (all four methods: background, transient, impulse, attenuation).
 
     Returns
     -------
     xr.Dataset
         Denoised Sv dataset.
     """
-    from echopype.clean import remove_background_noise
+    from oceanstream.echodata.denoise import apply_denoising
 
-    gpu_flag = "auto" if use_gpu else False
+    methods = config.methods if config else None
+    logger.info("Denoising (methods=%s)", methods or "default")
 
-    logger.info(
-        "Denoising (ping_num=%d, range_sample_num=%d, SNR=%s, gpu=%s)",
-        ping_num, range_sample_num, SNR_threshold, gpu_flag,
-    )
-
-    ds_denoised = remove_background_noise(
+    ds_denoised = apply_denoising(
         ds_sv,
-        ping_num=ping_num,
-        range_sample_num=range_sample_num,
-        background_noise_max=background_noise_max,
-        SNR_threshold=SNR_threshold,
-        use_gpu=gpu_flag,
+        methods=methods,
+        config=config,
     )
 
     logger.info("Denoising complete")

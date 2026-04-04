@@ -51,7 +51,7 @@ async def async_main() -> None:
     from ingest.file_trigger import handle_raw_file_added, parse_input_message
     from ingest.on_demand import handle_c2d_command, job_worker
     from ingest.realtime import RealtimeIngestion
-    from process.day_store import DayStore
+    from process.segment_store import SegmentStore
     from process.pipeline import process_echodata
 
     # --- IoT Hub client ---
@@ -77,7 +77,7 @@ async def async_main() -> None:
         backend=config.storage_backend,
         base_path=config.output_base_path,
     )
-    day_store = DayStore(storage, container=config.processed_container)
+    segment_store = SegmentStore(storage, container=config.processed_container)
     logger.info("Storage backend: %s", config.storage_backend)
 
     # --- Job queue for on-demand processing ---
@@ -107,13 +107,13 @@ async def async_main() -> None:
             if data.get("event") == "fileadd":
                 loop.call_soon_threadsafe(
                     loop.create_task,
-                    handle_raw_file_added(data, config, day_store, client),
+                    handle_raw_file_added(data, config, segment_store, client),
                 )
         elif message.input_name == "c2d":
             data = parse_input_message(message)
             loop.call_soon_threadsafe(
                 loop.create_task,
-                handle_c2d_command(data, config, day_store, client, job_queue),
+                handle_c2d_command(data, config, segment_store, client, job_queue),
             )
 
     client.on_message_received = on_message
@@ -122,13 +122,13 @@ async def async_main() -> None:
     tasks = []
 
     # Job worker (always active)
-    tasks.append(asyncio.create_task(job_worker(job_queue, config, day_store, client)))
+    tasks.append(asyncio.create_task(job_worker(job_queue, config, segment_store, client)))
 
     # Real-time ingestion (if enabled)
     realtime: RealtimeIngestion | None = None
     if config.processing_mode in ("realtime", "both"):
         async def on_batch(echodata, cfg):
-            await process_echodata(echodata, cfg, day_store, client)
+            await process_echodata(echodata, cfg, segment_store, client)
 
         realtime = RealtimeIngestion(config, on_batch=on_batch)
         await realtime.start()

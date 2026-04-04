@@ -42,13 +42,16 @@ def _unwrap(val: Any) -> Any:
 _TWIN_KEY_MAP: dict[str, str] = {"Log_Level": "log_level"}
 
 # Fields whose values need _parse_bool
-_BOOL_FIELDS: set[str] = {"use_gpu", "denoise_enabled", "plot_echogram"}
+_BOOL_FIELDS: set[str] = {
+    "use_gpu", "denoise_enabled", "mvbs_enabled", "nasc_enabled",
+    "plot_echogram", "seabed_enabled", "denoise_use_frequency_specific",
+}
 
 # Fields whose values need int()
-_INT_FIELDS: set[str] = {"ek80_port", "realtime_buffer_seconds"}
+_INT_FIELDS: set[str] = {"realtime_buffer_seconds", "realtime_buffer_pings", "realtime_min_pings"}
 
 # Fields whose values need float()
-_FLOAT_FIELDS: set[str] = {"depth_offset"}
+_FLOAT_FIELDS: set[str] = {"depth_offset", "seabed_max_range"}
 
 
 @dataclass
@@ -71,17 +74,29 @@ class EdgeConfig:
     # --- Processing mode ---
     processing_mode: Literal["realtime", "file", "both"] = "both"
 
-    # --- Real-time UDP settings ---
-    ek80_host: str = "192.168.0.105"
-    ek80_port: int = 37655
-    realtime_buffer_seconds: int = 60
+    # --- Real-time EK80 service ---
+    ek80_service_url: str = "http://localhost:8050"
+    realtime_buffer_seconds: int = 1800     # Time-based trigger (30 min)
+    realtime_buffer_pings: int = 100        # Ping-count trigger
+    realtime_min_pings: int = 50            # Minimum pings for any batch
 
     # --- GPU ---
     use_gpu: bool = True
 
     # --- Pipeline toggles ---
     denoise_enabled: bool = True
+    mvbs_enabled: bool = True
+    nasc_enabled: bool = False
     plot_echogram: bool = True
+
+    # --- Denoise ---
+    denoise_methods: str = "background,transient,impulse,attenuation"
+    denoise_use_frequency_specific: bool = False
+
+    # --- Seabed ---
+    seabed_enabled: bool = False
+    seabed_method: str = "ariza"
+    seabed_max_range: float = 1000.0
 
     # --- MVBS bins ---
     mvbs_range_bin: str = "0.5"
@@ -136,12 +151,20 @@ class EdgeConfig:
             platform_name=_get("platform_name", ""),
             platform_code_ICES=_get("platform_code_ICES", ""),
             processing_mode=_get("processing_mode", "both"),
-            ek80_host=os.getenv("EK80_HOST", _get("ek80_host", "192.168.0.105")),
-            ek80_port=int(os.getenv("EK80_PORT", _get("ek80_port", 37655))),
-            realtime_buffer_seconds=int(_get("realtime_buffer_seconds", 60)),
+            ek80_service_url=os.getenv("EK80_SERVICE_URL", _get("ek80_service_url", "http://localhost:8050")),
+            realtime_buffer_seconds=int(_get("realtime_buffer_seconds", 1800)),
+            realtime_buffer_pings=int(_get("realtime_buffer_pings", 100)),
+            realtime_min_pings=int(_get("realtime_min_pings", 50)),
             use_gpu=_parse_bool(_get("use_gpu", True)),
             denoise_enabled=_parse_bool(_get("denoise_enabled", True)),
+            mvbs_enabled=_parse_bool(_get("mvbs_enabled", True)),
+            nasc_enabled=_parse_bool(_get("nasc_enabled", False), default=False),
             plot_echogram=_parse_bool(_get("plot_echogram", True)),
+            denoise_methods=str(_get("denoise_methods", "background,transient,impulse,attenuation")),
+            denoise_use_frequency_specific=_parse_bool(_get("denoise_use_frequency_specific", False), default=False),
+            seabed_enabled=_parse_bool(_get("seabed_enabled", False), default=False),
+            seabed_method=str(_get("seabed_method", "ariza")),
+            seabed_max_range=float(_get("seabed_max_range", 1000.0)),
             mvbs_range_bin=str(_get("mvbs_range_bin", "0.5")),
             mvbs_ping_time_bin=str(_get("mvbs_ping_time_bin", "10s")),
             nasc_range_bin=str(_get("nasc_range_bin", "10")),

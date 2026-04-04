@@ -1,9 +1,9 @@
 FROM python:3.11-slim
 
 ARG ECHOPYPE_REPO=https://github.com/OceanStreamIO/echopype.git
-ARG ECHOPYPE_REF=oceanstream/cuda-acceleration
-ARG EK80_REPO=https://github.com/OceanStreamIO/ek80_udp_client.git
-ARG EK80_REF=main
+ARG ECHOPYPE_REF=oceanstream-integration
+ARG OCEANSTREAM_REPO=https://github.com/OceanStreamIO/oceanstream-cli.git
+ARG OCEANSTREAM_REF=feat/batch_processing
 
 WORKDIR /app
 
@@ -14,13 +14,16 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone and install echopype
+# Clone and install echopype (oceanstream-integration branch includes PingAccumulator + GPU)
 RUN git clone --branch $ECHOPYPE_REF --depth 1 $ECHOPYPE_REPO /opt/echopype \
-    && pip install --no-cache-dir /opt/echopype
+    && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 pip install --no-cache-dir /opt/echopype \
+    && rm -rf /opt/echopype
 
-# Clone and install ek80_udp_client
-RUN git clone --branch $EK80_REF --depth 1 $EK80_REPO /opt/ek80_udp_client \
-    && pip install --no-cache-dir /opt/ek80_udp_client
+# Clone and install oceanstream (core only — echodata module deps satisfied by requirements.txt)
+RUN pip install --no-cache-dir poetry-core \
+    && git clone --branch $OCEANSTREAM_REF --depth 1 $OCEANSTREAM_REPO /tmp/oceanstream \
+    && pip install --no-cache-dir --no-deps /tmp/oceanstream \
+    && rm -rf /tmp/oceanstream
 
 # Install remaining dependencies
 COPY requirements.txt .

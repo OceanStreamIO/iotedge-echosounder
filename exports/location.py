@@ -50,8 +50,8 @@ def extract_location_data(data: xr.Dataset, epsilon=0.00001, min_distance=0.01) 
     # Calculate distance and speed
     df["distance"] = [
         haversine(
-            (df["lat"].iloc[i], df["lon"].iloc[i - 1]),
-            (df["lat"].iloc[i - 1], df["lon"].iloc[i]),
+            (df["lat"].iloc[i - 1], df["lon"].iloc[i - 1]),
+            (df["lat"].iloc[i], df["lon"].iloc[i]),
             unit="nmi",
         )
         if i > 0 else 0 for i in range(len(df))
