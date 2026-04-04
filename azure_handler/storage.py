@@ -50,6 +50,15 @@ class StorageBackend(ABC):
     def list_stores(self, prefix: str) -> list[str]:
         """List Zarr stores under a prefix."""
 
+    @abstractmethod
+    def save_echodata(self, echodata, path: str) -> str:
+        """Save an EchoData object (DataTree with multiple groups).
+
+        EchoData.to_zarr() produces a multi-group Zarr store that
+        cannot round-trip through xr.open_zarr(), so this method
+        handles persistence directly.
+        """
+
 
 class LocalStorage(StorageBackend):
     """Direct filesystem storage."""
@@ -63,12 +72,30 @@ class LocalStorage(StorageBackend):
         full.parent.mkdir(parents=True, exist_ok=True)
         return full
 
+    def save_echodata(self, echodata, path: str) -> str:
+        full = self._resolve(path)
+        if full.exists():
+            shutil.rmtree(full)
+        echodata.to_zarr(save_path=str(full), overwrite=True)
+        logger.info("Saved EchoData to %s", full)
+        return str(full)
+
     def save_zarr(self, dataset: xr.Dataset, path: str, mode: str = "w") -> str:
         full = self._resolve(path)
         for var in dataset.data_vars:
             dataset[var].encoding.clear()
         for coord in dataset.coords:
             dataset[coord].encoding.clear()
+        # Unify irregular dask chunks to avoid Zarr validation errors
+        try:
+            import dask.array
+            if any(
+                isinstance(dataset[v].data, dask.array.Array)
+                for v in dataset.data_vars
+            ):
+                dataset = dataset.chunk("auto")
+        except (ImportError, Exception):
+            pass
         dataset.to_zarr(str(full), mode=mode)
         logger.info("Saved Zarr to %s", full)
         return str(full)
@@ -208,6 +235,17 @@ class AzureBlobEdgeStorage(StorageBackend):
             bc = cc.get_blob_client(blob.name)
             with open(dest, "wb") as f:
                 f.write(bc.download_blob().readall())
+
+    def save_echodata(self, echodata, path: str) -> str:
+        container = path.split("/")[0]
+        prefix = "/".join(path.split("/")[1:])
+        self._ensure_container(container)
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "echodata.zarr")
+            echodata.to_zarr(save_path=local_path, overwrite=True)
+            self._upload_dir(container, prefix, local_path)
+        logger.info("Saved EchoData to blob: %s", path)
+        return path
 
     def save_file(self, data: bytes, path: str) -> str:
         container = path.split("/")[0]

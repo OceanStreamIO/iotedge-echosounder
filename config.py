@@ -210,3 +210,45 @@ class EdgeConfig:
                 setattr(self, field_name, str(val) if not isinstance(val, str) else val)
 
         logger.info("Config updated from twin patch: %s", [k for k in patch if not k.startswith("$")])
+
+    @classmethod
+    def from_standalone(cls, **kwargs: Any) -> "EdgeConfig":
+        """Create config for standalone (non-IoT-Edge) operation.
+
+        Sets sensible defaults for local processing: ``storage_backend="local"``,
+        ``use_gpu=False``, ``processing_mode="file"``.  Environment variables
+        are read for any field not explicitly provided.
+        """
+        defaults = {
+            "storage_backend": os.getenv("STORAGE_BACKEND", "local"),
+            "output_base_path": os.getenv("OUTPUT_BASE_PATH", "./output"),
+            "processing_mode": "file",
+            "use_gpu": _parse_bool(os.getenv("USE_GPU", "false"), default=False),
+            "sonar_model": os.getenv("SONAR_MODEL", "EK80"),
+            "waveform_mode": os.getenv("WAVEFORM_MODE", "CW"),
+            "encode_mode": os.getenv("ENCODE_MODE", "power"),
+            "depth_offset": float(os.getenv("DEPTH_OFFSET", "0.0")),
+            "survey_id": os.getenv("SURVEY_ID", ""),
+            "survey_name": os.getenv("SURVEY_NAME", ""),
+            "platform_type": os.getenv("PLATFORM_TYPE", ""),
+            "platform_name": os.getenv("PLATFORM_NAME", ""),
+            "platform_code_ICES": os.getenv("PLATFORM_CODE_ICES", ""),
+            "denoise_enabled": _parse_bool(os.getenv("DENOISE_ENABLED", "true")),
+            "mvbs_enabled": _parse_bool(os.getenv("MVBS_ENABLED", "true")),
+            "nasc_enabled": _parse_bool(os.getenv("NASC_ENABLED", "false"), default=False),
+            "seabed_enabled": _parse_bool(os.getenv("SEABED_ENABLED", "false"), default=False),
+            "plot_echogram": _parse_bool(os.getenv("PLOT_ECHOGRAM", "true")),
+            "denoise_methods": os.getenv("DENOISE_METHODS", "background,transient,impulse,attenuation"),
+            "seabed_method": os.getenv("SEABED_METHOD", "ariza"),
+            "seabed_max_range": float(os.getenv("SEABED_MAX_RANGE", "1000.0")),
+            "mvbs_range_bin": os.getenv("MVBS_RANGE_BIN", "0.5"),
+            "mvbs_ping_time_bin": os.getenv("MVBS_PING_TIME_BIN", "10s"),
+            "nasc_range_bin": os.getenv("NASC_RANGE_BIN", "10"),
+            "nasc_dist_bin": os.getenv("NASC_DIST_BIN", "0.5"),
+            "converted_container": os.getenv("CONVERTED_CONTAINER_NAME", "echodata"),
+            "echogram_container": os.getenv("ECHOGRAM_CONTAINER_NAME", "echograms"),
+            "processed_container": os.getenv("PROCESSED_CONTAINER_NAME", "processed"),
+            "log_level": os.getenv("LOG_LEVEL", "INFO"),
+        }
+        defaults.update(kwargs)
+        return cls(**defaults)

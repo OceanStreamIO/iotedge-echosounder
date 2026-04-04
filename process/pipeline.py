@@ -45,12 +45,22 @@ async def process_echodata(
     config: "EdgeConfig",
     segment_store: "SegmentStore",
     client: Optional["IoTHubModuleClient"] = None,
+    *,
+    file_stem: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Process a single EchoData batch and save as an independent segment.
+    """Process a single EchoData batch and save products.
+
+    Two naming modes:
+    - **file_stem given** (file-based ingestion): products are saved
+      under ``processed/{file_stem}/``, echograms under
+      ``echograms/{file_stem}/``.  No date/segment hierarchy.
+    - **file_stem omitted** (real-time ingestion): products are saved
+      under the SegmentStore's ``processed/{date}/segments/{seg}/``
+      hierarchy.
 
     Steps:
       1. Compute Sv (with GPU if available)
-      2. Save Sv to segment
+      2. Save Sv
       3. Denoise (if enabled)
       4. Seabed detection (if enabled)
       5. Compute MVBS (if enabled)
@@ -68,6 +78,7 @@ async def process_echodata(
 
     start_time = time.time()
     result: Dict[str, Any] = {"status": "ok"}
+    storage = segment_store.storage
 
     # --- Step 1: Compute Sv ---
     ds_sv = compute_sv(
@@ -83,16 +94,32 @@ async def process_echodata(
         logger.warning("No valid pings after Sv computation — skipping")
         return {"status": "skipped", "reason": "no valid pings"}
 
-    # Derive segment identity
-    day = segment_store.segment_day(ds_sv)
-    seg_name = segment_store.segment_name(ds_sv)
+    # Derive output prefix
+    if file_stem:
+        # File mode: flat layout under campaign container
+        label = file_stem
+        processed_prefix = f"processed/{file_stem}"
+        echogram_prefix = f"echograms/{file_stem}"
+    else:
+        # Real-time mode: date/segment hierarchy
+        day = segment_store.segment_day(ds_sv)
+        label = segment_store.segment_name(ds_sv)
+        processed_prefix = (
+            f"{config.processed_container}/{day.isoformat()}"
+            f"/segments/{label}"
+        )
+        echogram_prefix = (
+            f"{config.echogram_container}/{day.isoformat()}"
+            f"/segments/{label}"
+        )
 
-    result["day"] = day.isoformat()
-    result["segment"] = seg_name
+    result["day"] = pd.Timestamp(ds_sv["ping_time"].values[0]).date().isoformat()
+    result["segment"] = label
     result["n_pings"] = int(n_pings)
 
     # --- Step 2: Save Sv ---
-    sv_path = segment_store.save_zarr(ds_sv, day, seg_name, "sv")
+    sv_path = f"{processed_prefix}/sv.zarr"
+    storage.save_zarr(ds_sv, sv_path)
     result["sv_path"] = sv_path
     _release_memory()
 
@@ -102,7 +129,7 @@ async def process_echodata(
         try:
             denoise_config = to_denoise_config(config)
             ds_denoised = denoise(ds_sv, config=denoise_config)
-            segment_store.save_zarr(ds_denoised, day, seg_name, "sv_denoised")
+            storage.save_zarr(ds_denoised, f"{processed_prefix}/sv_denoised.zarr")
             result["denoise"] = "ok"
         except Exception as e:
             logger.error("Denoising failed: %s", e, exc_info=True)
@@ -117,7 +144,7 @@ async def process_echodata(
                 method=config.seabed_method,
                 max_range=config.seabed_max_range,
             )
-            segment_store.save_zarr(ds_denoised, day, seg_name, "sv_seabed")
+            storage.save_zarr(ds_denoised, f"{processed_prefix}/sv_seabed.zarr")
             result["seabed"] = "ok"
         except Exception as e:
             logger.error("Seabed detection failed: %s", e, exc_info=True)
@@ -134,7 +161,7 @@ async def process_echodata(
                 ping_time_bin=config.mvbs_ping_time_bin,
             )
             if ds_mvbs.sizes:
-                segment_store.save_zarr(ds_mvbs, day, seg_name, "mvbs")
+                storage.save_zarr(ds_mvbs, f"{processed_prefix}/mvbs.zarr")
                 result["mvbs"] = "ok"
         except Exception as e:
             logger.error("MVBS failed: %s", e, exc_info=True)
@@ -150,7 +177,7 @@ async def process_echodata(
                 dist_bin=config.nasc_dist_bin + "nmi",
             )
             if ds_nasc.sizes:
-                segment_store.save_zarr(ds_nasc, day, seg_name, "nasc")
+                storage.save_zarr(ds_nasc, f"{processed_prefix}/nasc.zarr")
                 result["nasc"] = "ok"
         except Exception as e:
             logger.warning("NASC failed (may need GPS): %s", e)
@@ -161,15 +188,19 @@ async def process_echodata(
     if config.plot_echogram:
         try:
             from exports.echograms import generate_echograms
-            echogram_files = generate_echograms(
+            echogram_items = generate_echograms(
                 ds_sv=ds_sv,
                 ds_denoised=ds_denoised if config.denoise_enabled else None,
                 ds_mvbs=ds_mvbs,
-                day=day,
+                day=pd.Timestamp(ds_sv["ping_time"].values[0]).date(),
                 config=config,
-                output_subdir=f"segments/{seg_name}/echograms",
             )
-            result["echogram_files"] = echogram_files
+            saved_paths = []
+            for item in echogram_items:
+                path = f"{echogram_prefix}/{item['filename']}"
+                storage.save_file(item["data"], path)
+                saved_paths.append(path)
+            result["echogram_files"] = saved_paths
         except Exception as e:
             logger.error("Echogram generation failed: %s", e, exc_info=True)
         _release_memory()
@@ -179,8 +210,8 @@ async def process_echodata(
     result["processing_time_ms"] = processing_time_ms
 
     metadata = {
-        "segment": seg_name,
-        "day": day.isoformat(),
+        "file": file_stem or label,
+        "day": result["day"],
         "n_pings": int(n_pings),
         "n_channels": int(ds_sv.sizes.get("channel", 0)),
         "processing_time_ms": processing_time_ms,
@@ -201,9 +232,12 @@ async def process_echodata(
         },
     }
     try:
-        segment_store.save_metadata(metadata, day, seg_name)
+        metadata_path = f"{processed_prefix}/metadata.json"
+        data = json.dumps(metadata, indent=2, default=str).encode("utf-8")
+        storage.save_file(data, metadata_path)
+        logger.info("Saved metadata → %s", metadata_path)
     except Exception as e:
-        logger.error("Failed to save segment metadata: %s", e)
+        logger.error("Failed to save metadata: %s", e)
 
     # --- Step 8: Telemetry ---
     if client:
@@ -214,8 +248,8 @@ async def process_echodata(
             logger.error("Telemetry send failed: %s", e)
 
     logger.info(
-        "Segment %s complete: %d pings in %dms",
-        seg_name, n_pings, processing_time_ms,
+        "%s complete: %d pings in %dms",
+        label, n_pings, processing_time_ms,
     )
     return result
 
@@ -233,12 +267,26 @@ async def process_raw_file_pipeline(
 ) -> Dict[str, Any]:
     """Full pipeline for a single raw file.
 
-    Converts raw → EchoData → delegates to ``process_echodata()``.
+    Converts raw → EchoData → saves to ``echodata/{stem}.zarr`` →
+    delegates to ``process_echodata()`` with ``file_stem`` so all
+    products land in the campaign container using the file stem as
+    the sub-folder key.
+
+    Expected layout (campaign container = storage root):
+    ::
+
+        echodata/{stem}.zarr
+        processed/{stem}/sv.zarr
+        processed/{stem}/sv_denoised.zarr
+        processed/{stem}/mvbs.zarr
+        processed/{stem}/metadata.json
+        echograms/{stem}/sv_38kHz.png
     """
-    from process.convert import convert_raw_file
+    from process.convert import convert_raw_file, save_echodata_zarr
 
     start = time.time()
-    logger.info("File pipeline: %s", file_path)
+    stem = Path(file_path).stem
+    logger.info("File pipeline: %s  (stem=%s)", file_path, stem)
 
     echodata = convert_raw_file(file_path, sonar_model=config.sonar_model)
 
@@ -248,13 +296,27 @@ async def process_raw_file_pipeline(
         echodata["Platform"].attrs["platform_name"] = config.platform_name
         echodata["Platform"].attrs["platform_code_ICES"] = config.platform_code_ICES
         echodata["Top-level"].attrs["title"] = (
-            f"{config.survey_name} [{config.survey_id}], file {Path(file_path).stem}"
+            f"{config.survey_name} [{config.survey_id}], file {stem}"
         )
     except Exception as e:
         logger.debug("Could not set platform metadata: %s", e)
 
-    result = await process_echodata(echodata, config, segment_store, client)
+    # Save converted EchoData → echodata/{stem}.zarr
+    # EchoData is a DataTree (multiple groups); it cannot round-trip
+    # through xr.open_zarr() which only reads the root group.
+    echodata_storage_path = f"echodata/{stem}.zarr"
+    try:
+        segment_store.storage.save_echodata(echodata, echodata_storage_path)
+        logger.info("Saved EchoData → %s", echodata_storage_path)
+    except Exception as e:
+        logger.warning("Failed to save EchoData to storage: %s", e)
+        echodata_storage_path = ""
+
+    result = await process_echodata(
+        echodata, config, segment_store, client, file_stem=stem,
+    )
     result["source_file"] = Path(file_path).name
+    result["echodata_path"] = echodata_storage_path
     result["total_time_ms"] = int((time.time() - start) * 1000)
 
     # Send ML payload (preserves existing outputml route)
@@ -265,7 +327,7 @@ async def process_raw_file_pipeline(
                 "file_name": Path(file_path).name,
                 "sv_zarr_path": result["sv_path"],
                 "campaign_id": config.survey_id,
-                "dataset_id": Path(file_path).stem,
+                "dataset_id": stem,
                 "depth_offset": config.depth_offset,
                 "date": result.get("day", ""),
             }

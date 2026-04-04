@@ -1,0 +1,22 @@
+# Standalone mode dependencies for local development (no Docker / no IoT Edge).
+#
+# Install:
+#   pip install -e "../sd-data-ingest[echodata,echodata-viz]"
+#   pip install -r requirements-standalone.txt
+
+# Data stack (may overlap with oceanstream[echodata] — pip will de-dupe)
+dask[array]~=2024.12
+xarray>=2025.3
+zarr>=3
+numpy>=2.0
+pandas~=2.2
+scipy~=1.14
+bottleneck~=1.4
+
+# Utilities
+pydantic~=2.10
+matplotlib~=3.9
+haversine~=2.9
+python-dotenv~=1.0
+psutil~=6.1
+reportlab~=4.2
