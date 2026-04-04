@@ -48,10 +48,22 @@ _BOOL_FIELDS: set[str] = {
 }
 
 # Fields whose values need int()
-_INT_FIELDS: set[str] = {"realtime_buffer_seconds", "realtime_buffer_pings", "realtime_min_pings"}
+_INT_FIELDS: set[str] = {
+    "realtime_buffer_seconds", "realtime_buffer_pings", "realtime_min_pings",
+    "background_num_side_pings", "background_range_window", "background_ping_window",
+    "transient_n", "transient_n_pings",
+    "impulse_num_lags",
+    "attenuation_side_pings",
+}
 
 # Fields whose values need float()
-_FLOAT_FIELDS: set[str] = {"depth_offset", "seabed_max_range"}
+_FLOAT_FIELDS: set[str] = {
+    "depth_offset", "seabed_max_range",
+    "background_snr_threshold", "background_noise_max",
+    "transient_a", "transient_exclude_above", "transient_depth_bin", "transient_threshold_db",
+    "impulse_threshold_db", "impulse_vertical_bin",
+    "attenuation_threshold", "attenuation_upper_limit", "attenuation_lower_limit",
+}
 
 
 @dataclass
@@ -92,6 +104,34 @@ class EdgeConfig:
     # --- Denoise ---
     denoise_methods: str = "background,transient,impulse,attenuation"
     denoise_use_frequency_specific: bool = False
+    denoise_pulse_length: str = ""
+
+    # --- Denoise: background noise (De Robertis & Higginbottom 2007) ---
+    background_num_side_pings: int = 25
+    background_range_window: int = 20
+    background_ping_window: int = 50
+    background_snr_threshold: float = 3.0
+    background_noise_max: float = -999.0       # -999 = disabled (None in DenoiseConfig)
+
+    # --- Denoise: transient noise (Fielding et al.) ---
+    transient_a: float = 2.0
+    transient_n: int = 5
+    transient_exclude_above: float = 250.0
+    transient_depth_bin: float = 5.0
+    transient_n_pings: int = 20
+    transient_threshold_db: float = 6.0
+
+    # --- Denoise: impulse noise ---
+    impulse_threshold_db: float = 10.0
+    impulse_num_lags: int = 3
+    impulse_vertical_bin: float = 2.0
+    impulse_ping_lags: str = "1"               # Comma-separated list of lag ints
+
+    # --- Denoise: attenuation ---
+    attenuation_threshold: float = 0.8
+    attenuation_upper_limit: float = 180.0
+    attenuation_lower_limit: float = 280.0
+    attenuation_side_pings: int = 15
 
     # --- Seabed ---
     seabed_enabled: bool = False
@@ -162,6 +202,26 @@ class EdgeConfig:
             plot_echogram=_parse_bool(_get("plot_echogram", True)),
             denoise_methods=str(_get("denoise_methods", "background,transient,impulse,attenuation")),
             denoise_use_frequency_specific=_parse_bool(_get("denoise_use_frequency_specific", False), default=False),
+            denoise_pulse_length=str(_get("denoise_pulse_length", "")),
+            background_num_side_pings=int(_get("background_num_side_pings", 25)),
+            background_range_window=int(_get("background_range_window", 20)),
+            background_ping_window=int(_get("background_ping_window", 50)),
+            background_snr_threshold=float(_get("background_snr_threshold", 3.0)),
+            background_noise_max=float(_get("background_noise_max", -999.0)),
+            transient_a=float(_get("transient_a", 2.0)),
+            transient_n=int(_get("transient_n", 5)),
+            transient_exclude_above=float(_get("transient_exclude_above", 250.0)),
+            transient_depth_bin=float(_get("transient_depth_bin", 5.0)),
+            transient_n_pings=int(_get("transient_n_pings", 20)),
+            transient_threshold_db=float(_get("transient_threshold_db", 6.0)),
+            impulse_threshold_db=float(_get("impulse_threshold_db", 10.0)),
+            impulse_num_lags=int(_get("impulse_num_lags", 3)),
+            impulse_vertical_bin=float(_get("impulse_vertical_bin", 2.0)),
+            impulse_ping_lags=str(_get("impulse_ping_lags", "1")),
+            attenuation_threshold=float(_get("attenuation_threshold", 0.8)),
+            attenuation_upper_limit=float(_get("attenuation_upper_limit", 180.0)),
+            attenuation_lower_limit=float(_get("attenuation_lower_limit", 280.0)),
+            attenuation_side_pings=int(_get("attenuation_side_pings", 15)),
             seabed_enabled=_parse_bool(_get("seabed_enabled", False), default=False),
             seabed_method=str(_get("seabed_method", "ariza")),
             seabed_max_range=float(_get("seabed_max_range", 1000.0)),
@@ -239,6 +299,26 @@ class EdgeConfig:
             "seabed_enabled": _parse_bool(os.getenv("SEABED_ENABLED", "false"), default=False),
             "plot_echogram": _parse_bool(os.getenv("PLOT_ECHOGRAM", "true")),
             "denoise_methods": os.getenv("DENOISE_METHODS", "background,transient,impulse,attenuation"),
+            "denoise_pulse_length": os.getenv("DENOISE_PULSE_LENGTH", ""),
+            "background_num_side_pings": int(os.getenv("BACKGROUND_NUM_SIDE_PINGS", "25")),
+            "background_range_window": int(os.getenv("BACKGROUND_RANGE_WINDOW", "20")),
+            "background_ping_window": int(os.getenv("BACKGROUND_PING_WINDOW", "50")),
+            "background_snr_threshold": float(os.getenv("BACKGROUND_SNR_THRESHOLD", "3.0")),
+            "background_noise_max": float(os.getenv("BACKGROUND_NOISE_MAX", "-999.0")),
+            "transient_a": float(os.getenv("TRANSIENT_A", "2.0")),
+            "transient_n": int(os.getenv("TRANSIENT_N", "5")),
+            "transient_exclude_above": float(os.getenv("TRANSIENT_EXCLUDE_ABOVE", "250.0")),
+            "transient_depth_bin": float(os.getenv("TRANSIENT_DEPTH_BIN", "5.0")),
+            "transient_n_pings": int(os.getenv("TRANSIENT_N_PINGS", "20")),
+            "transient_threshold_db": float(os.getenv("TRANSIENT_THRESHOLD_DB", "6.0")),
+            "impulse_threshold_db": float(os.getenv("IMPULSE_THRESHOLD_DB", "10.0")),
+            "impulse_num_lags": int(os.getenv("IMPULSE_NUM_LAGS", "3")),
+            "impulse_vertical_bin": float(os.getenv("IMPULSE_VERTICAL_BIN", "2.0")),
+            "impulse_ping_lags": os.getenv("IMPULSE_PING_LAGS", "1"),
+            "attenuation_threshold": float(os.getenv("ATTENUATION_THRESHOLD", "0.8")),
+            "attenuation_upper_limit": float(os.getenv("ATTENUATION_UPPER_LIMIT", "180.0")),
+            "attenuation_lower_limit": float(os.getenv("ATTENUATION_LOWER_LIMIT", "280.0")),
+            "attenuation_side_pings": int(os.getenv("ATTENUATION_SIDE_PINGS", "15")),
             "seabed_method": os.getenv("SEABED_METHOD", "ariza"),
             "seabed_max_range": float(os.getenv("SEABED_MAX_RANGE", "1000.0")),
             "mvbs_range_bin": os.getenv("MVBS_RANGE_BIN", "0.5"),
