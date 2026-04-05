@@ -233,3 +233,131 @@ def generate_md_report(
     content = "\n".join(lines)
     logger.info("Markdown report generated (%d lines)", len(lines))
     return content
+
+
+def generate_segment_report(
+    result: Dict[str, Any],
+    metadata: Dict[str, Any],
+    config: "EdgeConfig",
+) -> str:
+    """Generate a compact Markdown report for a single processing segment.
+
+    Designed for RAG indexing by the edgeai service: structured headings,
+    machine-readable data points, and echogram image references.
+
+    Parameters
+    ----------
+    result
+        The result dict from ``process_echodata()``.
+    metadata
+        The metadata dict that was saved as ``metadata.json``.
+    config
+        The EdgeConfig used for processing.
+    """
+    lines: list[str] = []
+
+    def w(line: str = ""):
+        lines.append(line)
+
+    label = result.get("segment", metadata.get("file", "unknown"))
+    day = result.get("day", "")
+    n_pings = result.get("n_pings", 0)
+    n_channels = metadata.get("n_channels", 0)
+    proc_ms = result.get("processing_time_ms", 0)
+
+    w(f"# Segment Report: {label}")
+    w()
+    w(f"> Day: {day} | Pings: {n_pings:,} | Channels: {n_channels} "
+      f"| Processing: {proc_ms}ms")
+    w()
+
+    # ── Channels & Frequencies ──
+    frequencies = metadata.get("frequencies_hz", [])
+    channels = metadata.get("channels", [])
+    if frequencies or channels:
+        w("## Channels & Frequencies")
+        w()
+        if channels and frequencies and len(channels) == len(frequencies):
+            for ch, freq in zip(channels, frequencies):
+                w(f"- {ch}: {_fmt_freq(freq)}")
+        elif frequencies:
+            w(f"- Frequencies: {', '.join(_fmt_freq(f) for f in sorted(frequencies))}")
+        elif channels:
+            for ch in channels:
+                w(f"- {ch}")
+        w()
+
+    # ── Data Coverage ──
+    w("## Data Coverage")
+    w()
+    start_t = result.get("start_time", "")
+    end_t = result.get("end_time", "")
+    if start_t and end_t:
+        w(f"- **Time**: {start_t} → {end_t}")
+    depth = metadata.get("depth_range_m") or result.get("depth_range_m")
+    if depth:
+        w(f"- **Depth**: {depth[0]:.1f}m → {depth[1]:.1f}m")
+    lat = metadata.get("lat_range") or result.get("lat_range")
+    lon = metadata.get("lon_range") or result.get("lon_range")
+    if lat:
+        w(f"- **Latitude**: [{lat[0]:.4f}, {lat[1]:.4f}]")
+    if lon:
+        w(f"- **Longitude**: [{lon[0]:.4f}, {lon[1]:.4f}]")
+    sv_mean = metadata.get("sv_mean_db") or result.get("sv_mean_db")
+    if sv_mean is not None:
+        w(f"- **Mean Sv**: {sv_mean} dB")
+    w()
+
+    # ── Products ──
+    w("## Products")
+    w()
+    product_map = {
+        "sv": ("sv.zarr", True),
+        "sv_denoised": ("sv_denoised.zarr", config.denoise_enabled),
+        "sv_seabed": ("sv_seabed.zarr", config.seabed_enabled),
+        "mvbs": ("mvbs.zarr", config.mvbs_enabled),
+        "nasc": ("nasc.zarr", config.nasc_enabled),
+    }
+    products_list = metadata.get("products", [])
+    for key, (filename, enabled) in product_map.items():
+        if key in products_list:
+            w(f"- {filename} ✅")
+        elif not enabled:
+            w(f"- {filename} ⏭ (not enabled)")
+        elif result.get(key) and "error" in str(result.get(key, "")):
+            w(f"- {filename} ❌ ({result[key]})")
+        else:
+            w(f"- {filename} ⏭")
+    w()
+
+    # ── Configuration ──
+    w("## Configuration")
+    w()
+    w(f"- **Sonar**: {config.sonar_model}, {config.waveform_mode}, {config.encode_mode}")
+    if config.denoise_enabled:
+        w(f"- **Denoise**: {config.denoise_methods}")
+    if config.mvbs_enabled:
+        w(f"- **MVBS**: range_bin={config.mvbs_range_bin}m, "
+          f"ping_time_bin={config.mvbs_ping_time_bin}")
+    if config.nasc_enabled:
+        w(f"- **NASC**: range_bin={config.nasc_range_bin}m, "
+          f"dist_bin={config.nasc_dist_bin}nmi")
+    if config.seabed_enabled:
+        w(f"- **Seabed**: method={config.seabed_method}, "
+          f"max_range={config.seabed_max_range}m")
+    w(f"- **GPU**: {'enabled' if config.use_gpu else 'disabled'}")
+    w()
+
+    # ── Echograms ──
+    echogram_files = result.get("echogram_files", [])
+    if echogram_files:
+        w("## Echograms")
+        w()
+        for ef in echogram_files:
+            sp = _storage_path(ef)
+            stem = Path(ef).stem
+            alt = stem.replace("_", " ").title()
+            w(f"![{alt}]({sp})")
+            w()
+
+    return "\n".join(lines)

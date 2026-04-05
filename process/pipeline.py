@@ -209,13 +209,69 @@ async def process_echodata(
     processing_time_ms = int((time.time() - start_time) * 1000)
     result["processing_time_ms"] = processing_time_ms
 
+    # Extract additional scientific metadata from ds_sv
+    try:
+        frequencies = [float(f) for f in ds_sv["frequency_nominal"].values]
+        result["frequencies_hz"] = frequencies
+    except Exception:
+        frequencies = []
+
+    try:
+        channels = [str(ch) for ch in ds_sv.coords["channel"].values]
+        result["channels"] = channels
+    except Exception:
+        channels = []
+
+    ping_times = ds_sv["ping_time"].values
+    start_ts = pd.Timestamp(ping_times[0])
+    end_ts = pd.Timestamp(ping_times[-1])
+    result["start_time"] = start_ts.isoformat()
+    result["end_time"] = end_ts.isoformat()
+
+    depth_range = None
+    for depth_var in ("echo_range", "depth"):
+        if depth_var in ds_sv:
+            try:
+                vals = ds_sv[depth_var].values
+                valid = vals[np.isfinite(vals)]
+                if len(valid) > 0:
+                    depth_range = [float(np.nanmin(valid)), float(np.nanmax(valid))]
+                    break
+            except Exception:
+                pass
+    if depth_range:
+        result["depth_range_m"] = depth_range
+
+    for coord in ("latitude", "longitude"):
+        if coord in ds_sv:
+            try:
+                vals = ds_sv[coord].values
+                valid = vals[np.isfinite(vals) & (vals != 0)]
+                if len(valid) > 0:
+                    result[f"{coord[:3]}_range"] = [float(valid.min()), float(valid.max())]
+            except Exception:
+                pass
+
+    try:
+        sv_mean = float(ds_sv["Sv"].mean())
+        if np.isfinite(sv_mean):
+            result["sv_mean_db"] = round(sv_mean, 1)
+    except Exception:
+        pass
+
     metadata = {
         "file": file_stem or label,
         "day": result["day"],
+        "segment": label,
+        "start_time": result.get("start_time"),
+        "end_time": result.get("end_time"),
         "n_pings": int(n_pings),
         "n_channels": int(ds_sv.sizes.get("channel", 0)),
+        "frequencies_hz": frequencies,
+        "channels": channels,
         "processing_time_ms": processing_time_ms,
         "products": [k for k in ("sv", "sv_denoised", "sv_seabed", "mvbs", "nasc") if result.get(k) == "ok" or k == "sv"],
+        "echogram_files": result.get("echogram_files", []),
         "config": {
             "sonar_model": config.sonar_model,
             "waveform_mode": config.waveform_mode,
@@ -231,6 +287,15 @@ async def process_echodata(
             "use_gpu": config.use_gpu,
         },
     }
+    if depth_range:
+        metadata["depth_range_m"] = depth_range
+    if result.get("lat_range"):
+        metadata["lat_range"] = result["lat_range"]
+    if result.get("lon_range"):
+        metadata["lon_range"] = result["lon_range"]
+    if result.get("sv_mean_db") is not None:
+        metadata["sv_mean_db"] = result["sv_mean_db"]
+
     try:
         metadata_path = f"{processed_prefix}/metadata.json"
         data = json.dumps(metadata, indent=2, default=str).encode("utf-8")
@@ -238,6 +303,16 @@ async def process_echodata(
         logger.info("Saved metadata → %s", metadata_path)
     except Exception as e:
         logger.error("Failed to save metadata: %s", e)
+
+    # --- Step 7b: Segment Markdown Report ---
+    try:
+        from exports.report_md import generate_segment_report
+        report_md = generate_segment_report(result, metadata, config)
+        report_path = f"{processed_prefix}/segment_report.md"
+        storage.save_file(report_md.encode("utf-8"), report_path)
+        logger.info("Saved segment report → %s", report_path)
+    except Exception as e:
+        logger.error("Failed to save segment report: %s", e)
 
     # --- Step 8: Telemetry ---
     if client:
