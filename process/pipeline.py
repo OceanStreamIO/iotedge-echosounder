@@ -253,9 +253,12 @@ async def process_echodata(
                 pass
 
     try:
-        sv_mean = float(ds_sv["Sv"].mean())
-        if np.isfinite(sv_mean):
-            result["sv_mean_db"] = round(sv_mean, 1)
+        sv_vals = ds_sv["Sv"].values
+        finite_mask = np.isfinite(sv_vals)
+        if finite_mask.any():
+            sv_mean = float(np.nanmean(sv_vals[finite_mask]))
+            if np.isfinite(sv_mean):
+                result["sv_mean_db"] = round(sv_mean, 1)
     except Exception:
         pass
 
@@ -301,6 +304,8 @@ async def process_echodata(
         data = json.dumps(metadata, indent=2, default=str).encode("utf-8")
         storage.save_file(data, metadata_path)
         logger.info("Saved metadata → %s", metadata_path)
+        # Also write to local filesystem for the edgeai RAG indexer
+        _write_local_copy(metadata_path, data)
     except Exception as e:
         logger.error("Failed to save metadata: %s", e)
 
@@ -309,8 +314,10 @@ async def process_echodata(
         from exports.report_md import generate_segment_report
         report_md = generate_segment_report(result, metadata, config)
         report_path = f"{processed_prefix}/segment_report.md"
-        storage.save_file(report_md.encode("utf-8"), report_path)
+        report_data = report_md.encode("utf-8")
+        storage.save_file(report_data, report_path)
         logger.info("Saved segment report → %s", report_path)
+        _write_local_copy(report_path, report_data)
     except Exception as e:
         logger.error("Failed to save segment report: %s", e)
 
@@ -411,6 +418,28 @@ async def process_raw_file_pipeline(
             logger.error("ML payload send failed: %s", e)
 
     return result
+
+
+_LOCAL_BASE = Path("/app/processed")
+
+
+def _write_local_copy(blob_path: str, data: bytes) -> None:
+    """Write a copy to the local filesystem for the edgeai RAG indexer.
+
+    The blob_path looks like ``processed/2023-06-25/segments/.../file``.
+    Strip the leading container name (``processed``) to get the relative
+    path, then write under ``/app/processed/`` which is bind-mounted to
+    ``/data/processed/`` on the host — where the edgeai file watcher runs.
+    """
+    try:
+        parts = blob_path.split("/", 1)
+        rel = parts[1] if len(parts) > 1 else parts[0]
+        dest = _LOCAL_BASE / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        logger.debug("Local copy → %s", dest)
+    except Exception as e:
+        logger.warning("Failed to write local copy of %s: %s", blob_path, e)
 
 
 def _release_memory() -> None:
