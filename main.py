@@ -77,8 +77,15 @@ async def async_main() -> None:
         backend=config.storage_backend,
         base_path=config.output_base_path,
     )
-    segment_store = SegmentStore(storage, container=config.processed_container)
-    logger.info("Storage backend: %s", config.storage_backend)
+    segment_store = SegmentStore(
+        storage,
+        container=config.campaign_container,
+        processed_subfolder=config.processed_container,
+    )
+    logger.info(
+        "Storage backend: %s, campaign container: %s",
+        config.storage_backend, config.campaign_container,
+    )
 
     # --- Job queue for on-demand processing ---
     job_queue: asyncio.Queue = asyncio.Queue(maxsize=100)

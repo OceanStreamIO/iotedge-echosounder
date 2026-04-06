@@ -50,12 +50,15 @@ async def process_echodata(
 ) -> Dict[str, Any]:
     """Process a single EchoData batch and save products.
 
+    All products land in a single campaign container (``survey_id``),
+    with data-type subfolders (``processed/``, ``echograms/``).
+
     Two naming modes:
     - **file_stem given** (file-based ingestion): products are saved
-      under ``processed/{file_stem}/``, echograms under
-      ``echograms/{file_stem}/``.  No date/segment hierarchy.
+      under ``{campaign}/processed/{file_stem}/``, echograms under
+      ``{campaign}/echograms/{file_stem}/``.  No date/segment hierarchy.
     - **file_stem omitted** (real-time ingestion): products are saved
-      under the SegmentStore's ``processed/{date}/segments/{seg}/``
+      under ``{campaign}/processed/{date}/segments/{seg}/``
       hierarchy.
 
     Steps:
@@ -94,22 +97,23 @@ async def process_echodata(
         logger.warning("No valid pings after Sv computation — skipping")
         return {"status": "skipped", "reason": "no valid pings"}
 
-    # Derive output prefix
+    # Derive output prefix — all data lands in one campaign container
+    campaign = config.campaign_container
     if file_stem:
         # File mode: flat layout under campaign container
         label = file_stem
-        processed_prefix = f"processed/{file_stem}"
-        echogram_prefix = f"echograms/{file_stem}"
+        processed_prefix = f"{campaign}/{config.processed_container}/{file_stem}"
+        echogram_prefix = f"{campaign}/{config.echogram_container}/{file_stem}"
     else:
         # Real-time mode: date/segment hierarchy
         day = segment_store.segment_day(ds_sv)
         label = segment_store.segment_name(ds_sv)
         processed_prefix = (
-            f"{config.processed_container}/{day.isoformat()}"
+            f"{campaign}/{config.processed_container}/{day.isoformat()}"
             f"/segments/{label}"
         )
         echogram_prefix = (
-            f"{config.echogram_container}/{day.isoformat()}"
+            f"{campaign}/{config.echogram_container}/{day.isoformat()}"
             f"/segments/{label}"
         )
 
@@ -349,20 +353,20 @@ async def process_raw_file_pipeline(
 ) -> Dict[str, Any]:
     """Full pipeline for a single raw file.
 
-    Converts raw → EchoData → saves to ``echodata/{stem}.zarr`` →
+    Converts raw → EchoData → saves to ``{campaign}/echodata/{stem}.zarr`` →
     delegates to ``process_echodata()`` with ``file_stem`` so all
     products land in the campaign container using the file stem as
     the sub-folder key.
 
-    Expected layout (campaign container = storage root):
+    Expected layout (campaign container = survey_id):
     ::
 
-        echodata/{stem}.zarr
-        processed/{stem}/sv.zarr
-        processed/{stem}/sv_denoised.zarr
-        processed/{stem}/mvbs.zarr
-        processed/{stem}/metadata.json
-        echograms/{stem}/sv_38kHz.png
+        {campaign}/echodata/{stem}.zarr
+        {campaign}/processed/{stem}/sv.zarr
+        {campaign}/processed/{stem}/sv_denoised.zarr
+        {campaign}/processed/{stem}/mvbs.zarr
+        {campaign}/processed/{stem}/metadata.json
+        {campaign}/echograms/{stem}/sv_38kHz.png
     """
     from process.convert import convert_raw_file, save_echodata_zarr
 
@@ -383,10 +387,11 @@ async def process_raw_file_pipeline(
     except Exception as e:
         logger.debug("Could not set platform metadata: %s", e)
 
-    # Save converted EchoData → echodata/{stem}.zarr
+    # Save converted EchoData → {campaign}/echodata/{stem}.zarr
     # EchoData is a DataTree (multiple groups); it cannot round-trip
     # through xr.open_zarr() which only reads the root group.
-    echodata_storage_path = f"echodata/{stem}.zarr"
+    campaign = config.campaign_container
+    echodata_storage_path = f"{campaign}/{config.converted_container}/{stem}.zarr"
     try:
         segment_store.storage.save_echodata(echodata, echodata_storage_path)
         logger.info("Saved EchoData → %s", echodata_storage_path)
@@ -426,8 +431,8 @@ _LOCAL_BASE = Path("/app/processed")
 def _write_local_copy(blob_path: str, data: bytes) -> None:
     """Write a copy to the local filesystem for the edgeai RAG indexer.
 
-    The blob_path looks like ``processed/2023-06-25/segments/.../file``.
-    Strip the leading container name (``processed``) to get the relative
+    The blob_path looks like ``{campaign}/processed/2023-06-25/segments/.../file``.
+    Strip the leading campaign container name to get the relative
     path, then write under ``/app/processed/`` which is bind-mounted to
     ``/data/processed/`` on the host — where the edgeai file watcher runs.
     """

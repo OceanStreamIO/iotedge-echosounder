@@ -1,0 +1,24 @@
+{
+  "$schema": "https://streambase.co/schemas/module.json",
+  "name": "echosounder",
+  "version": "0.1.0",
+  "language": "python",
+  "project": {
+    "name": "streambase-iot",
+    "configPath": "../ubuntu-iotedge-device"
+  },
+  "docker": {
+    "platforms": {
+      "linux/amd64": "Dockerfile.Linux.amd64",
+      "linux/arm/v7": "Dockerfile.Linux.arm",
+      "linux/arm64": "Dockerfile.Linux.arm64"
+    }
+  },
+  "standalone": {
+    "entrypoint": "standalone.py",
+    "requirements": "requirements-standalone.txt"
+  },
+  "test": {
+    "command": "pytest"
+  }
+}

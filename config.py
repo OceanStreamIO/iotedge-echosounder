@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, fields
 from typing import Any, Dict, Literal, Optional
 
@@ -36,6 +37,27 @@ def _unwrap(val: Any) -> Any:
     if isinstance(val, dict) and "value" in val:
         return val["value"]
     return val
+
+
+def sanitize_container_name(name: str) -> str:
+    """Sanitize a string into a valid Azure Blob Storage container name.
+
+    Azure rules: 3-63 chars, lowercase alphanumeric and hyphens only,
+    no leading/trailing/consecutive hyphens, must start with letter or number.
+    """
+    if not name:
+        return "default"
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9-]", "-", s)   # replace invalid chars with hyphens
+    s = re.sub(r"-{2,}", "-", s)          # collapse consecutive hyphens
+    s = s.strip("-")                       # no leading/trailing hyphens
+    s = s[:63]                             # max length
+    s = s.strip("-")                       # re-strip after truncation
+    if not s or not s[0].isalnum():
+        s = "default"
+    if len(s) < 3:
+        s = s.ljust(3, "0")               # min length 3
+    return s
 
 
 # Twin key → dataclass field name (for keys that differ from field names)
@@ -156,6 +178,16 @@ class EdgeConfig:
 
     # --- Logging ---
     log_level: str = "INFO"
+
+    @property
+    def campaign_container(self) -> str:
+        """Azure Blob container name derived from survey_id.
+
+        All data for a campaign lands in one container with subfolders
+        for each data type (processed/, echograms/, echodata/).
+        Falls back to ``"default"`` when survey_id is empty.
+        """
+        return sanitize_container_name(self.survey_id or "default")
 
     # ------------------------------------------------------------------
     # Factory

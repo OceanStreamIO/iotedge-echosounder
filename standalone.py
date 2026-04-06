@@ -3,11 +3,11 @@
 
 Runs the full processing pipeline locally without Azure IoT Edge runtime.
 Processes raw echosounder files from a directory and produces all outputs
-inside a single **campaign container** (``output/{survey_id}/``):
+inside a single **campaign container** (``output/{campaign_container}/``):
 
 ::
 
-    output/{survey_id}/
+    output/{campaign_container}/
         echodata/{stem}.zarr
         processed/{stem}/sv.zarr
         processed/{stem}/sv_denoised.zarr
@@ -152,12 +152,16 @@ async def run_pipeline(args: argparse.Namespace) -> None:
     )
 
     # --- Storage ---
-    # Campaign container = storage root.  On the edge device this maps
-    # to a single blob container; locally it maps to output/{survey_id}/.
-    campaign_id = config.survey_id or "default"
-    campaign_root = args.output_dir / campaign_id
-    storage = LocalStorage(base_path=str(campaign_root))
-    segment_store = SegmentStore(storage, container=config.processed_container)
+    # Pipeline paths are "{campaign_container}/processed/{stem}/..." etc.
+    # With LocalStorage, base_path is the root output dir and the campaign
+    # container becomes a subdirectory, yielding:
+    #   output/{campaign_container}/processed/{stem}/sv.zarr
+    storage = LocalStorage(base_path=str(args.output_dir))
+    segment_store = SegmentStore(
+        storage,
+        container=config.campaign_container,
+        processed_subfolder=config.processed_container,
+    )
 
     # --- Discover raw files ---
     input_dir = args.input_dir.resolve()
@@ -209,7 +213,7 @@ async def run_pipeline(args: argparse.Namespace) -> None:
 
     # --- Generate and persist report ---
     report_filename = f"{config.survey_id or 'standalone'}_report.md"
-    report_storage_path = f"reports/{report_filename}"
+    report_storage_path = f"{config.campaign_container}/reports/{report_filename}"
     report_content = generate_md_report(
         results=all_results,
         config=config,

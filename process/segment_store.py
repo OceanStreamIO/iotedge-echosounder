@@ -54,12 +54,20 @@ class SegmentStore:
     storage : StorageBackend
         Storage backend for persistence.
     container : str
-        Container or base prefix for processed data.
+        Campaign container name (derived from survey_id).
+    processed_subfolder : str
+        Subfolder within the campaign container for processed data.
     """
 
-    def __init__(self, storage: StorageBackend, container: str = "processed"):
+    def __init__(
+        self,
+        storage: StorageBackend,
+        container: str = "default",
+        processed_subfolder: str = "processed",
+    ):
         self.storage = storage
         self.container = container
+        self.processed_subfolder = processed_subfolder
 
     @staticmethod
     def segment_name(ds: xr.Dataset) -> str:
@@ -76,7 +84,7 @@ class SegmentStore:
         return pd.Timestamp(ds["ping_time"].values[0]).date()
 
     def _segment_prefix(self, day: date, seg_name: str) -> str:
-        return f"{self.container}/{day.isoformat()}/segments/{seg_name}"
+        return f"{self.container}/{self.processed_subfolder}/{day.isoformat()}/segments/{seg_name}"
 
     def save_zarr(
         self, ds: xr.Dataset, day: date, seg_name: str, product: str
@@ -110,7 +118,7 @@ class SegmentStore:
 
     def list_segments(self, day: date) -> list[str]:
         """List segment names for a given day."""
-        prefix = f"{self.container}/{day.isoformat()}/segments"
+        prefix = f"{self.container}/{self.processed_subfolder}/{day.isoformat()}/segments"
         stores = self.storage.list_stores(prefix)
         names = set()
         for s in stores:
@@ -125,7 +133,9 @@ class SegmentStore:
 
     def list_days(self) -> list[date]:
         """List all days that have at least one segment."""
-        stores = self.storage.list_stores(self.container)
+        stores = self.storage.list_stores(
+            f"{self.container}/{self.processed_subfolder}"
+        )
         days = set()
         for s in stores:
             parts = Path(s).parts
