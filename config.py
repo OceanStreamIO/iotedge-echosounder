@@ -110,6 +110,8 @@ class EdgeConfig:
 
     # --- Real-time EK80 service ---
     ek80_service_url: str = "http://localhost:8050"
+    ek80_host: str = ""                      # EK80 echosounder IP — forwarded to ek80-service
+    ek80_port: int = 0                       # EK80 discovery port — forwarded to ek80-service
     realtime_buffer_seconds: int = 1800     # Time-based trigger (30 min)
     realtime_buffer_pings: int = 100        # Ping-count trigger
     realtime_min_pings: int = 50            # Minimum pings for any batch
@@ -224,6 +226,8 @@ class EdgeConfig:
             platform_code_ICES=_get("platform_code_ICES", ""),
             processing_mode=_get("processing_mode", "both"),
             ek80_service_url=os.getenv("EK80_SERVICE_URL", _get("ek80_service_url", "http://localhost:8050")),
+            ek80_host=str(_get("ek80_host", "")),
+            ek80_port=int(_get("ek80_port", 0) or 0),
             realtime_buffer_seconds=int(_get("realtime_buffer_seconds", 1800)),
             realtime_buffer_pings=int(_get("realtime_buffer_pings", 100)),
             realtime_min_pings=int(_get("realtime_min_pings", 50)),
@@ -301,7 +305,46 @@ class EdgeConfig:
             else:
                 setattr(self, field_name, str(val) if not isinstance(val, str) else val)
 
+        # If ek80_host or ek80_port changed, forward to the ek80-service
+        if "ek80_host" in patch or "ek80_port" in patch:
+            self._forward_ek80_config()
+
         logger.info("Config updated from twin patch: %s", [k for k in patch if not k.startswith("$")])
+
+    def _forward_ek80_config(self) -> None:
+        """Push ek80_host/ek80_port to the ek80-service via PUT /config.
+
+        Called after a twin update changes the EK80 target address.
+        Runs synchronously (fire-and-forget from a thread) to avoid
+        blocking the twin callback.
+        """
+        if not self.ek80_host:
+            return
+        import threading
+
+        def _do_forward() -> None:
+            import urllib.request
+            import json as _json
+
+            url = f"{self.ek80_service_url.rstrip('/')}/config"
+            payload: dict[str, Any] = {"host": self.ek80_host}
+            if self.ek80_port:
+                payload["port"] = self.ek80_port
+            data = _json.dumps(payload).encode()
+            req = urllib.request.Request(
+                url, data=data, method="PUT",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    logger.info(
+                        "Forwarded EK80 config to ek80-service: %s → %s",
+                        payload, resp.read().decode(),
+                    )
+            except Exception as e:
+                logger.error("Failed to forward EK80 config to ek80-service: %s", e)
+
+        threading.Thread(target=_do_forward, daemon=True).start()
 
     @classmethod
     def from_standalone(cls, **kwargs: Any) -> "EdgeConfig":
@@ -357,9 +400,10 @@ class EdgeConfig:
             "mvbs_ping_time_bin": os.getenv("MVBS_PING_TIME_BIN", "10s"),
             "nasc_range_bin": os.getenv("NASC_RANGE_BIN", "10"),
             "nasc_dist_bin": os.getenv("NASC_DIST_BIN", "0.5"),
-            "converted_container": os.getenv("CONVERTED_CONTAINER_NAME", "echodata"),
+            "converted_container": os.getenv("CONVERTED_CONTAINER_NAME", "converted"),
             "echogram_container": os.getenv("ECHOGRAM_CONTAINER_NAME", "echograms"),
             "processed_container": os.getenv("PROCESSED_CONTAINER_NAME", "processed"),
+            "ek80_service_url": os.getenv("EK80_SERVICE_URL", "http://localhost:8050"),
             "log_level": os.getenv("LOG_LEVEL", "INFO"),
         }
         defaults.update(kwargs)

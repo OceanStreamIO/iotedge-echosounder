@@ -143,14 +143,14 @@ class RealtimeIngestion:
             ch_lookup[ch_id] = ch
             accumulator.register_channel(ChannelConfig(
                 channel_id=ch_id,
-                frequency=ch.get("frequency", 200000.0),
-                pulse_duration=ch.get("pulse_length", 0.001024),
-                sample_interval=ch.get("sample_interval", 0.000016),
-                gain=ch.get("gain", 25.0),
-                sa_correction=ch.get("sa_correction", 0.0),
-                equivalent_beam_angle=ch.get("equivalent_beam_angle", -20.7),
-                beam_width_alongship=ch.get("beamwidth_alongship", 7.0),
-                beam_width_athwartship=ch.get("beamwidth_athwartship", 7.0),
+                frequency=ch.get("frequency") or 200000.0,
+                pulse_duration=ch.get("pulse_length") or 0.001024,
+                sample_interval=ch.get("sample_interval") or 0.000016,
+                gain=ch.get("gain") or 25.0,
+                sa_correction=ch.get("sa_correction") or 0.0,
+                equivalent_beam_angle=ch.get("equivalent_beam_angle") or -20.7,
+                beam_width_alongship=ch.get("beamwidth_alongship") or 7.0,
+                beam_width_athwartship=ch.get("beamwidth_athwartship") or 7.0,
                 transceiver_type=ch.get("transducer_name") or "WBT",
             ))
 
@@ -198,12 +198,12 @@ class RealtimeIngestion:
                         timestamp=timestamp,
                         channel_id=ch_id,
                         power_samples=samples,
-                        transmit_power=ch.get("transmit_power", 100.0),
-                        pulse_duration=ch.get("pulse_length", 0.001024),
-                        sample_interval=ch.get("sample_interval", 0.000016),
-                        frequency=ch.get("frequency", 200000.0),
-                        sound_speed=ch.get("sound_velocity", 1500.0),
-                        absorption=ch.get("absorption_coefficient", 0.0),
+                        transmit_power=ch.get("transmit_power") or 100.0,
+                        pulse_duration=ch.get("pulse_length") or 0.001024,
+                        sample_interval=ch.get("sample_interval") or 0.000016,
+                        frequency=ch.get("frequency") or 200000.0,
+                        sound_speed=ch.get("sound_velocity") or 1500.0,
+                        absorption=ch.get("absorption_coefficient") or 0.0,
                     )
                 except Exception as e:
                     logger.debug("Failed to process ping for %s: %s", ch_id, e)

@@ -309,7 +309,7 @@ async def process_echodata(
         storage.save_file(data, metadata_path)
         logger.info("Saved metadata → %s", metadata_path)
         # Also write to local filesystem for the edgeai RAG indexer
-        _write_local_copy(metadata_path, data)
+        _write_local_copy(metadata_path, data, config.output_base_path)
     except Exception as e:
         logger.error("Failed to save metadata: %s", e)
 
@@ -321,7 +321,7 @@ async def process_echodata(
         report_data = report_md.encode("utf-8")
         storage.save_file(report_data, report_path)
         logger.info("Saved segment report → %s", report_path)
-        _write_local_copy(report_path, report_data)
+        _write_local_copy(report_path, report_data, config.output_base_path)
     except Exception as e:
         logger.error("Failed to save segment report: %s", e)
 
@@ -428,18 +428,20 @@ async def process_raw_file_pipeline(
 _LOCAL_BASE = Path("/app/processed")
 
 
-def _write_local_copy(blob_path: str, data: bytes) -> None:
+def _write_local_copy(blob_path: str, data: bytes, base_path: str | None = None) -> None:
     """Write a copy to the local filesystem for the edgeai RAG indexer.
 
     The blob_path looks like ``{campaign}/processed/2023-06-25/segments/.../file``.
     Strip the leading campaign container name to get the relative
-    path, then write under ``/app/processed/`` which is bind-mounted to
+    path, then write under the configured output base path (or
+    ``/app/processed/`` as fallback) which is bind-mounted to
     ``/data/processed/`` on the host — where the edgeai file watcher runs.
     """
     try:
+        local_base = Path(base_path) if base_path else _LOCAL_BASE
         parts = blob_path.split("/", 1)
         rel = parts[1] if len(parts) > 1 else parts[0]
-        dest = _LOCAL_BASE / rel
+        dest = local_base / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         logger.debug("Local copy → %s", dest)
